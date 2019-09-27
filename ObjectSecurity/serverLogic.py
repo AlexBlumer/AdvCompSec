@@ -345,7 +345,7 @@ def handleShutdown(client):
     
     sock.send(sendMsgBytes)
     
-    while client.getConnectionState != ServerState.SHUTDOWN_COMPLETE and resendCount < maxResendCount:
+    while client.getConnectionState() != ServerState.SHUTDOWN_COMPLETE and resendCount < maxResendCount:
         data = sock.recv(512)
         
         if data == -1:
@@ -372,6 +372,7 @@ def handleObjectRequest(client, msg): # TODO add an objReqAck
     reqNum = msg.getRequestNumber()
     target = msg.getTargetObject()
     keyHash = msg.getRequestedObjectKeyHash()
+    sock = clientData.getSocket()
     
     # Make sure all values exist
     if reqNum == False or reqNum == None or target == False or target == None or keyHash == False or keyHash == None:
@@ -382,8 +383,24 @@ def handleObjectRequest(client, msg): # TODO add an objReqAck
     elif not client.checkRequestNumberUsed(reqNum): # A new request
         client.setRequestNumberState(reqNum, DataExchangeState.DATA_SENT)
         
-        objectKey = objectKeys[keyHash]
         objectData = obtainData(target)
+        objectKey = objectKeys[keyHash]
+        # Send an object request ack if either fails
+        if objectData == None: # TODO or whatever fail value is for obtainData
+            sessionKey = client.getSessionKey()
+            sendMsgData = {status:DataExchangeStatus.OBJ_NOT_FOUND, requestNum:reqNum}
+            sendMsg = Message(MessageType.OBJECT_REQUEST_ACK, sendMsgData)
+            sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+            sock.send(sendMsgBytes)
+            return
+        elif objectKey == None:
+            sessionKey = client.getSessionKey()
+            sendMsgData = {status:DataExchangeStatus.UNKNOWN_KEY, requestNum:reqNum}
+            sendMsg = Message(MessageType.OBJECT_REQUEST_ACK, sendMsgData)
+            sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+            sock.send(sendMsgBytes)
+            return
+        
         encryptedObjectData = aesEncrypt(data=objectData, key=objectKey)
         objectHash = hash(objectData.append(target)) # TODO make it actually append
         encryptedObjectHash = aesEncrypt(data=objectHash, key=objectKey)
@@ -394,14 +411,12 @@ def handleObjectRequest(client, msg): # TODO add an objReqAck
         sendMsg = Message(MessageType.DATA_MESSAGE, messageData)
         sendMsgBytes = sendMsg.toBytes()
         
-        sock = clientData.getSocket()
         sock.send(sendMsgBytes)
     elif client.getRequestNumberState(reqNum) == DataExchangeState.DATA_SENT: # A resend request
         messageData = client.getRequestNumberData(reqNum)
         sendMsg = Message(MessageType.DATA_MESSAGE, messageData)
         sendMsgBytes = sendMsg.toBytes()
         
-        sock = clientData.getSocket()
         sock.send(sendMsgBytes)
     # Only remaining possibility is a valid request with a request number that has been ACKed, in which case no need to send more data
         

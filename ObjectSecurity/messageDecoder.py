@@ -1,5 +1,6 @@
 from enum import Enum, IntEnum, unique
 
+# TODO maybe add automatic hashes to to/fromBytes(), for integrity purposes
 # TODO add timestamp to connect request, response, and diffie hellman response to remove replay attacks
 
 @unique
@@ -11,6 +12,7 @@ class MessageType(IntEnum):
     KEY_ADVERTISEMENT = 4
     KEY_ADVERTISEMENT_ACK = 5
     OBJECT_REQUEST = 6
+    OBJECT_REQUEST_ACK = 7
     DATA_MESSAGE = 8
     DATA_ACK = 9
     SHUTDOWN_REQUEST = 10
@@ -19,7 +21,6 @@ class MessageType(IntEnum):
 
 @unique
 class DataExchangeStatus(IntEnum):
-    SUCCESS = 0
     OBJ_NOT_FOUND = 1
     UNKNOWN_KEY = 2
     # TODO possible others
