@@ -368,7 +368,7 @@ Handles object requests received by the server and sends the data message. If th
 :param client:      A ClientData object.
 :param msg:         A Message object with type of OBJECT_REQUEST
 """
-def handleObjectRequest(client, msg):
+def handleObjectRequest(client, msg): # TODO add an objReqAck
     reqNum = msg.getRequestNumber()
     target = msg.getTargetObject()
     keyHash = msg.getRequestedObjectKeyHash()
@@ -385,7 +385,7 @@ def handleObjectRequest(client, msg):
         objectKey = objectKeys[keyHash]
         objectData = obtainData(target)
         encryptedObjectData = aesEncrypt(data=objectData, key=objectKey)
-        objectHash = hash(objectData)
+        objectHash = hash(objectData.append(target)) # TODO make it actually append
         encryptedObjectHash = aesEncrypt(data=objectHash, key=objectKey)
         
         messageData = {keyHash:keyHash, dataHash:encryptedObjectHash, data:encryptedObjectData, objectName:target, requestNum:reqNum}
