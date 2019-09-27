@@ -4,7 +4,7 @@ from enum import Enum, IntEnum, unique
 
 @unique
 class MessageType(IntEnum):
-    UNITIALIZED = 0
+    UNINITIALIZED = 0
     CONNECT_REQUEST = 1
     CONNECT_RESPONSE = 2
     DIFFIE_HELLMAN_RESPONSE = 3
@@ -18,7 +18,11 @@ class MessageType(IntEnum):
     SHUTDOWN_CLOSER_ACK = 12
 
 @unique
-class 
+class DataExchangeStatus(IntEnum):
+    SUCCESS = 0
+    OBJ_NOT_FOUND = 1
+    UNKNOWN_KEY = 2
+    # TODO possible others
 
 messageTypeSet = set(item for item in MessageType)
 
