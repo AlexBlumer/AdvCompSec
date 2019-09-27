@@ -12,7 +12,13 @@ class ClientState(IntEnum):
     SHUTDOWN_SENT = 6
     SHUTDOWN_COMPLETE = 7
 
-class ClientData:
+class DataExchangeState(IntEnum):
+    UNINITIALIZED = 0
+    REQUEST_SENT = 1
+    OBJECT_REQUEST_ACK_RECEIVED = 2
+    EXCHANGE_COMPLETE = 3
+
+class ServerData:
     def __init__(self, host=None, port=None, sock=None, pubKey=None, sessionKey=None, objectKeyHashes=[], connectionState=ClientState.UNINITIALZED):
         self.host = host
         self.port = port
@@ -80,7 +86,7 @@ def runClient(serverKeyFile, objectKeyFile, requestedObjects, host, port=7734): 
     
     sock.connect( (host, port) )
     
-    client = ClientData(host=host, port=port, sock=sock, connectionState=ClientState.HANDSHAKE_STARTED)
+    server = ServerData(host=host, port=port, sock=sock, connectionState=ClientState.HANDSHAKE_STARTED)
     
     print("Initiating connection to host '{}' and port {}".format(host, port))
     success = initiateConnection(server)
@@ -109,7 +115,7 @@ Initiates the connection to the server
 
 :returns:   success - a boolean representing whether the connection was successful
 """
-def initiateConnection(server)
+def initiateConnection(server):
     ownPubKeyHash = getOwnPubKeyHash()
     ownPrivKey = getOwnPrivKey()
     serverPubKey = None
@@ -153,6 +159,24 @@ Makes a data request to the server for the given object, saving it to a file wit
             status - a value indicating the status of the object
 """
 def dataRequest(server, object):
+    reqNum = generateRequestNumber()
+    sock = server.getSocket()
+    
+    server.setRequestNumberState(reqNum, DataExchangeState.REQUEST_SENT)
+    sessionKey = server.getSessionKey()
+    
+    while server.getRequestNumberState(reqNum) < DataExchangeState.EXCHANGE_COMPLETE:
+        data = sock.recv(512)
+        
+        try:
+            msg = Message.fromBytes()
+            handleDataResponse(server, msg)
+        except: # not a valid data response, should probably be a late KeyAdvertisementAck or an objRequestAck
+            success, status, recvReqNum = handleObjectRequestAck(server, data)
+            if success and status != DataExchangeStatus.SENDING_DATA and recvReqNum == reqNum:
+                return False, status
+        
+            
     
 
 """
@@ -257,7 +281,88 @@ def handleKeyAdvertisementAck(server, data):
     if server.getConnectionState() == ClientState.KEYS_ADVERTISED:
         server.setConnectionState(ClientState.DATA_EXCHANGE)
 
-# TODO update variable names to work for clientside
+"""
+Handles object request acks. If the status contains a failure, marks the reqNum as finished.
+
+:param server:  A ServerData object
+:param data:    The bytes of the message received
+
+:returns:   (success, status, reqNum)
+            success - a boolean indicating whether or not the received data was a valid OBJECT_REQUEST_ACK message. False may also indicate that the retrieved values (i.e. the keyHashes) were invalid
+            status - the status that the object request ack gave. None if success is false
+            reqNum - The request number given by the ack
+"""
+def handleObjectRequestAck(server, data):
+    sessionKey = server.getSessionKey()
+    aesDecrypt(data=data, key=sessionKey)
+    
+    status = None
+    reqNum = None
+    try:
+        msg = Message.fromBytes()
+        status = msg.getStatus()
+        reqNum = msg.getRequestNumber()
+        if status in {False, None} or reqNum in {False, None}:
+            return (False, None, None)
+    except:
+        return (False, None, None)
+
+    if not server.checkRequestNumberUsed(reqNum):
+        return (False, None, None)
+    
+    if server.getConnectionState(reqNum) < DataExchangeState.EXCHANGE_COMPLETE:
+        if status == DataExchangeStatus.SENDING_DATA:
+            server.setConnectionState(reqNum, DataExchangeState.OBJECT_REQUEST_ACK_RECEIVED)
+        else:
+            server.setConnectionState(reqNum, DataExchangeState.EXCHANGE_COMPLETE)
+    
+    return (True, status, reqNum)
+    
+"""
+Handles data responses. Always sends a data ack. If the request number is unfinished, saves the data to a local file and updates the request number's state.
+
+:param client:  A ClientData object.
+:param data:    The data response Message
+
+:returns:   success - a boolean indicating whether or not the received data was a valid DATA_RESPONSE message. False may also indicate that the retrieved values (i.e. the keyHashes) were invalid
+"""
+def handleDataResponse(server, msg):
+    reqNum = msg.getRequestNumber()
+    keyHash = msg.getKeyHash()
+    dataHash = msg.getObjectDataHash()
+    data = msg.getObjectData()
+    objectName = msg.getObjectName() # TODO add data for reqNumbers to ensure objectName matches requested object
+    
+    if reqNum in {False, None} or keyHash in {False, None} or dataHash in {False, None} or data in {False, None} or objectName in {False, None}:
+        return False
+    
+    if server.checkRequestNumberUsed(reqNum) == False:
+        return False
+    
+    key = objectKeys.get(keyHash)
+    if key == None:
+        return False
+    
+    unencryptedDataHash = aesDecrypt(data=dataHash, key=key)
+    unencryptedData = aesDecrypt(data=data, key=key)
+    
+    if hash(unencryptedData.append(objectName)) != unencryptedDataHash: # Not the correct object. TODO make hash actually append
+        return False
+    
+    if server.getRequestNumberState() == DataExchangeState.REQUEST_SENT:
+        saveObject(data=unencryptedData, name=objectName)
+    
+    sock = server.getSocket()
+    sessionKey = server.getSessionKey()
+    
+    sendMsgData = {requestNum:reqNum}
+    sendMsg = Message(MessageType.DATA_ACK, sendMsgData)
+    sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+    sock.send(sendMsgBytes)
+    
+    return True
+    
+
 def initiateShutdown(server):
     server.setConnectionState(ClientState.SHUTDOWN_SENT)
     
@@ -267,13 +372,13 @@ def initiateShutdown(server):
     maxResendCount = 10
     resendCount = 0
     
-    sessionKey = client.getSessionKey()
+    sessionKey = server.getSessionKey()
     sendMsg = Message(MessageType.SHUTDOWN_REQUEST)
     sendMsgBytes = aesEncrypt(data=sendMsg, key=sessionKey)
     
     sock.send(sendMsgBytes)
     
-    while client.getConnectionState != ServerState.SHUTDOWN_COMPLETE and resendCount < maxResendCount:
+    while server.getConnectionState() != ServerState.SHUTDOWN_COMPLETE and resendCount < maxResendCount:
         data = sock.recv(512)
         
         if data == -1:
@@ -282,7 +387,7 @@ def initiateShutdown(server):
             unencryptedData = aesDecrypt(data=data, key=sessionKey)
             msg = Message.fromBytes(unencryptedData)
             if msg.type == MessageType.SHUTDOWN_CLOSEE_ACK:
-                client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
+                server.setConnectionState(ClientState.SHUTDOWN_COMPLETE)
                 sendMsg = Message(MessageType.SHUTDOWN_CLOSER_ACK)
                 sendMsgBytes = aesEncrypt(data=sendMsg, key=sessionKey)
                 sock.send(sendMsgBytes)
