@@ -72,7 +72,6 @@ class ServerData:
         self.requestNumbers[requestNumber] = state
 
 
-# split into new thread or otherwise do async?
 def runClient(serverKeyFile, objectKeyFile, requestedObjects, host, port=7734): # '' indicates bind to all IP addresses
     global serverKeys
     serverKeys = getKeys(serverKeyFile)
@@ -82,7 +81,7 @@ def runClient(serverKeyFile, objectKeyFile, requestedObjects, host, port=7734): 
     if not isinstance(port, int) or port < 0 or port > 65535:
         raise Exception("Invalid port. Should be an integer between 0 and 65535, inclusive.")
     sock = socket.socket(type=SOCK_DGRAM)
-    sock.bind( socket.INADDR_ANY ) # bind to any open socket
+    sock.bind(socket.INADDR_ANY) # bind to any open addresss
     
     sock.connect( (host, port) )
     
@@ -311,10 +310,14 @@ def handleObjectRequestAck(server, data):
         return (False, None, None)
     
     if server.getConnectionState(reqNum) < DataExchangeState.EXCHANGE_COMPLETE:
-        if status == DataExchangeStatus.SENDING_DATA:
-            server.setConnectionState(reqNum, DataExchangeState.OBJECT_REQUEST_ACK_RECEIVED)
-        else:
-            server.setConnectionState(reqNum, DataExchangeState.EXCHANGE_COMPLETE)
+        server.setConnectionState(reqNum, DataExchangeState.EXCHANGE_COMPLETE)
+    
+    sock = server.getSocket()
+    sessionKey = server.getSessionKey()
+    sendMsgData = {requestNum:reqNum}
+    sendMsg = Message(MessageType.DATA_ACK, sendMsgData)
+    sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), sessionKey)
+    sock.send(sendMsgBytes)
     
     return (True, status, reqNum)
     
