@@ -75,6 +75,13 @@ class ServerData:
         return self.requestNumbers.get(requestNumber) != None
     def setRequestNumberState(self, requestNumber, state):
         self.requestNumbers[requestNumber] = state
+    
+    def getRequestNumberData(self):
+        return self.requestData
+    def setRequestNumberData(self, requestNumber, data):
+        self.requestData[requestNumber] = data
+    def clearRequestNumberData(self, requestNumber):
+        self.pop(requestNumber)
 
 
 def runClient(serverKeyFile, objectKeyFile, requestedObjects, host, port=7734): # '' indicates bind to all IP addresses
@@ -134,27 +141,42 @@ def initiateConnection(server):
     sendMsgBytes = sendMsg.toBytes()
     sock.send(sendMsgBytes)
     
+    maxResendCount = 10
     ownDhVal = None
-    while server.getConnectionState() < ClientState.DATA_EXCHANGE: # TODO add in max resend
+    while server.getConnectionState() < ClientState.DATA_EXCHANGE and resendCount < maxResendCount:
         data = None
         try:
             data = sock.recv(512)
         except socket.timeout:
             data = -1
+            resendCount += 1
         
+        success = False
         state = server.getConnectionState()
         if state == ClientState.HANDSHAKE_STARTED:
-            success, ownDhVal = handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash)
+            if data != -1:
+                success, ownDhVal = handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash) # TODO timeout currently tries to resend next data, not prev
             if not success and server.getConnectionState() <= ClientState.DIFFIE_HELLMAN_SENT:
                 sock.send(sendMsgBytes) # Probably a timeout, resend the request
+                resendCount += 1
+            else:
+                resendCount = 0
         elif state == ClientState.DIFFIE_HELLMAN_SENT:
-            success = handleKeyAdvertisement(server, data)
+            if data != -1:
+                success = handleKeyAdvertisement(server, data)
             if not success and server.getConnectionState() <= ClientState.DIFFIE_HELLMAN_SENT:
                 success, _ = handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, ownDhVal)
+                resendCount += 1
+            else:
+                resendCount = 0
         elif state == ClientState.KEYS_ADVERTISED:
-            success = handleKeyAdvertisementAck(server, data)
+            if data != -1:
+                success = handleKeyAdvertisementAck(server, data)
             if not success and server.getConnectionState() <= ClientState.KEYS_ADVERTISED:
                 handleKeyAdvertisement(server, data)
+                resendCount += 1
+            else:
+                resendCount = 0
 """
 Makes a data request to the server for the given object, saving it to a file with the same name as the object
 
@@ -170,19 +192,24 @@ def dataRequest(server, object, objectKeyHash):
     sock = server.getSocket()
     
     server.setRequestNumberState(reqNum, DataExchangeState.REQUEST_SENT)
+    server.setRequestNumberData(reqNum, objectKeyHash)
     sessionKey = server.getSessionKey()
     
     sendMsgData = {target:object, keyHash:objectKeyHash, requestNum:reqNum}
     sendMsg = Message(MessageType.OBJECT_REQUEST, sendMsgData)
     sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+    sock.send(sendMsgBytes)
     
-    # TODO resends
+    resendCount = 0
+    maxResendCount = 10
     while server.getRequestNumberState(reqNum) < DataExchangeState.EXCHANGE_COMPLETE:
         data = None
         try:
             data = sock.recv(512)
         except socket.timeout:
-            data = -1
+            sock.send(sendMsgBytes)
+            resendCount += 1
+            continue
         
         try:
             msg = Message.fromBytes()
@@ -350,14 +377,15 @@ def handleDataResponse(server, msg):
     keyHash = msg.getKeyHash()
     dataHash = msg.getObjectDataHash()
     data = msg.getObjectData()
-    objectName = msg.getObjectName() # TODO add data for reqNumbers to ensure objectName matches requested object
+    objectName = msg.getObjectName()
     
     if reqNum in {False, None} or keyHash in {False, None} or dataHash in {False, None} or data in {False, None} or objectName in {False, None}:
         return False
     
     if server.checkRequestNumberUsed(reqNum) == False:
         return False
-    
+    if objectName != server.getRequestNumberData(reqNum):
+        return False
     key = objectKeys.get(keyHash)
     if key == None:
         return False
@@ -365,7 +393,8 @@ def handleDataResponse(server, msg):
     unencryptedDataHash = aesDecrypt(data=dataHash, key=key)
     unencryptedData = aesDecrypt(data=data, key=key)
     
-    if hash(unencryptedData.append(objectName)) != unencryptedDataHash: # Not the correct object. TODO make hash actually append
+    preHashValue = bytearray(unencryptedData).append(bytes(objectName))
+    if hash( bytes(preHashValue) ) != unencryptedDataHash: # Not the correct object
         return False
     
     if server.getRequestNumberState() == DataExchangeState.REQUEST_SENT:
