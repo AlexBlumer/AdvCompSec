@@ -1,7 +1,9 @@
 import socket
 from messageDecoder import *
 from enum import IntEnum
-
+from aes import ObjSAES as AES
+from diffie_hellman import ObjSDH as DH
+from rsa import ObjSRSA as RSA
 # TODO finish helper functions
 # TODO figure out actual max length of packets for receiving
 # TODO resends
@@ -237,9 +239,9 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
             client.setPubKey(clientPublicKey)
             
             dhParams = getDiffieHellmanParams()
-            dhVal, privDhVal = createDiffieHellmanVal()
+            dhVal, privDhVal = DH.createDiffieHellmanValue()
         
-    ownKey = getOwnPublicKeyHash()
+    ownKey = RSA.generate_key()
     sendMsgData = {"key": ownKey, "exchangeParams": params, "exchangeValue": sentVal}
     
     sendMsg = Message(MessageType.CONNECT_RESPONSE, sendMsgData)
