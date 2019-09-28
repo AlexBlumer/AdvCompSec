@@ -97,9 +97,9 @@ class ClientData:
 # split into new thread or otherwise do async?
 def runServer(clientKeyFile, objectKeyFile, address='', port=7734): # '' indicates bind to all IP addresses
     global clientKeys
-    clientKeys = getKeys(clientKeyFile)
+    clientKeys = RSA.getKeys(clientKeyFile) #RSA keys
     global objectKeys
-    objectKeys = getKeys(objectKeyFile)
+    objectKeys = getKeys(objectKeyFile) #AES keys
 
     if not isinstance(port, int) or port < 0 or port > 65535:
         raise Exception("Invalid port. Should be an integer between 0 and 65535, inclusive.")
@@ -176,7 +176,7 @@ def dataExchangeLoop(client):
         if data == -1:
             continue
         
-        unencryptedData = aesDecrypt(key=sessionKey, data=data)
+        unencryptedData = AES.decrypt(key=sessionKey, data=data)
         
         msg = None
         type = None
@@ -240,11 +240,11 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
             dhParams = getDiffieHellmanParams()
             dhVal, privDhVal = DH.createDiffieHellmanValue()
         
-    ownKey = RSA.generate_key()
-    sendMsgData = {"key": ownKey, "exchangeParams": params, "exchangeValue": sentVal}
+    ownKey, _ = RSA.generate_key()
+    sendMsgData = {"key": ownKey, "exchangeParams": params, "exchangeValue": dhVal}
     
     sendMsg = Message(MessageType.CONNECT_RESPONSE, sendMsgData)
-    sendBytes = rsaEncrypt(data=sendMsg.toBytes(), pubKey=clientPublicKey)
+    sendBytes = RSA.encrypt(data=sendMsg.toBytes(), pubKey=clientPublicKey)
     
     sock = client.getSocket()
     sock.send(sendBytes) # TODO check for success?
@@ -265,8 +265,8 @@ def handleDiffieHellmanResponse(clientData, data, privDhVal=None):
     try:
         privateKey = getOwnPrivateKey()
         clientPubKey = clientData.getPubKey()
-        unencryptedData = rsaDecrypt(data=data, key=privateKey)
-        unencryptedData = rsaDecrypt(data=unencryptedData, key=clientPubKey)
+        unencryptedData = RSA.decrypt(data=data, key=privateKey)
+        unencryptedData = RSA.decrypt(data=unencryptedData, key=clientPubKey)
         msg = Message.fromBytes(unencryptedData)
         dhVal = msg.getDiffieHellmanValue()
         if dhVal == False or dhVal == None: # Not a valid DIFFIE_HELLMAN_RESPONSE. Probably an encrypted message that start with the right number
@@ -287,7 +287,7 @@ def handleDiffieHellmanResponse(clientData, data, privDhVal=None):
     allowedKeys = getAllowedKeyHashes()
     sendMsgData = {"keys":allowedKeys}
     sendMsg = Message(MessageType.KEY_ADVERTISEMENT)
-    sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     
     sock = clientData.getSocket()
     sock.send(sendMsgBytes)
@@ -304,7 +304,7 @@ def handleKeyAdvertisementServer(clientData, data, privDhVal=None):
     validKeyHashes = None
     try:
         sessionKey = clientData.getSessionKey()
-        unencryptedData = aesDecrypt(data=data, key=sessionKey)
+        unencryptedData = AES.decrypt(data=data, key=sessionKey)
         msg = Message.fromBytes(unencryptedData)
         validKeyHashes = msg.getObjectKeyHashes()
         if validKeyHashes == False or validKeyHashes == None: # Not a valid KEY_ADVERTISEMENT.
@@ -320,7 +320,7 @@ def handleKeyAdvertisementServer(clientData, data, privDhVal=None):
         client.setObjectKeyHashes(validKeyHashes)
     
     sendMsg = Message(MessageType.KEY_ADVERTISEMENT_ACK)
-    sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     
     sock = clientData.getSocket()
     sock.send(sendMsgBytes)
@@ -343,7 +343,7 @@ def handleShutdown(client):
     
     sessionKey = client.getSessionKey()
     sendMsg = Message(MessageType.SHUTDOWN_CLOSEE_ACK)
-    sendMsgBytes = aesEncrypt(data=sendMsg, key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg, key=sessionKey)
     
     sock.send(sendMsgBytes)
     
@@ -353,7 +353,7 @@ def handleShutdown(client):
         if data == -1:
             sock.send(sendMsgBytes)
         else:
-            unencryptedData = aesDecrypt(data=data, key=sessionKey)
+            unencryptedData = AES.decrypt(data=data, key=sessionKey)
             msg = Message.fromBytes(unencryptedData)
             if msg.type == MessageType.SHUTDOWN_CLOSER_ACK:
                 client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
@@ -386,9 +386,9 @@ def handleObjectRequest(client, msg):
         
         objectKey = objectKeys[keyHash]
         objectData = obtainData(target)
-        encryptedObjectData = aesEncrypt(data=objectData, key=objectKey)
+        encryptedObjectData = AES.encrypt(data=objectData, key=objectKey)
         objectHash = hash(objectData)
-        encryptedObjectHash = aesEncrypt(data=objectHash, key=objectKey)
+        encryptedObjectHash = AES.encrypt(data=objectHash, key=objectKey)
         
         messageData = {keyHash:keyHash, dataHash:encryptedObjectHash, data:encryptedObjectData, objectName:target, requestNum:reqNum}
         client.setRequestNumberData(reqNum, messageData) # Save the data to avoid recomputing for resends

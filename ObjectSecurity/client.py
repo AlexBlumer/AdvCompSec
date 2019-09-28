@@ -73,7 +73,7 @@ class ClientData:
 # split into new thread or otherwise do async?
 def runClient(serverKeyFile, objectKeyFile, requestedObjects, host, port=7734): # '' indicates bind to all IP addresses
     global serverKeys
-    serverKeys = getKeys(serverKeyFile)
+    serverKeys = RSA.getKeys(serverKeyFile)
     global objectKeys
     objectKeys = getKeys(objectKeyFile)
 
@@ -179,7 +179,7 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
     serverDhVal = None
     dhParams = None
     try:
-        unencryptedData = rsaDecrypt(data=data, privateKey=ownPrivKey)
+        unencryptedData = RSA.decrypt(data=data, privateKey=ownPrivKey)
         msg = Message.fromBytes(unencryptedData)
         pubKeyHash = msg.getPublicKeyHash()
         serverDhVal = msg.getDiffieHellmanValue()
@@ -205,8 +205,8 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
     
     sendMsgData = {exchangeValue:dhVal}
     sendMsg = Message(MessageType.DIFFIE_HELLMAN_RESPONSE, sendMsgData)
-    sendMsgBytes = rsaEncrypt(data=sendMsg.toBytes(), pubKey=server.getPubKey())
-    sendMsgBytes = rsaEncrypt(data=sendMsgBytes, privKey=ownPrivKey)
+    sendMsgBytes = RSA.encrypt(data=sendMsg.toBytes(), pubKey=server.getPubKey())
+    sendMsgBytes = RSA.encrypt(data=sendMsgBytes, privKey=ownPrivKey)
     sock.send(sendMsgBytes)
     
 """
@@ -274,7 +274,7 @@ def initiateShutdown(server):
     
     sessionKey = client.getSessionKey()
     sendMsg = Message(MessageType.SHUTDOWN_REQUEST)
-    sendMsgBytes = aesEncrypt(data=sendMsg, key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg, key=sessionKey)
     
     sock.send(sendMsgBytes)
     
@@ -284,12 +284,12 @@ def initiateShutdown(server):
         if data == -1:
             sock.send(sendMsgBytes)
         else:
-            unencryptedData = aesDecrypt(data=data, key=sessionKey)
+            unencryptedData = AES.decrypt(data=data, key=sessionKey)
             msg = Message.fromBytes(unencryptedData)
             if msg.type == MessageType.SHUTDOWN_CLOSEE_ACK:
                 client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
                 sendMsg = Message(MessageType.SHUTDOWN_CLOSER_ACK)
-                sendMsgBytes = aesEncrypt(data=sendMsg, key=sessionKey)
+                sendMsgBytes = AES.encrypt(data=sendMsg, key=sessionKey)
                 sock.send(sendMsgBytes)
             else:
                 sock.send(sendMsgBytes)
