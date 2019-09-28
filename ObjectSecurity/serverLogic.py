@@ -4,6 +4,7 @@ from enum import IntEnum
 
 # TODO finish helper functions
 # TODO figure out actual max length of packets for receiving
+# TODO resends
 
 class ClientState(IntEnum):
     UNINITIALZED = 0
@@ -402,7 +403,8 @@ def handleObjectRequest(client, msg): # TODO add an objReqAck
             return
         
         encryptedObjectData = aesEncrypt(data=objectData, key=objectKey)
-        objectHash = hash(objectData.append(target)) # TODO make it actually append
+        preHashValue = bytearray(objectData).append(bytes(target))
+        objectHash = hash(bytes(preHashValue)) # TODO make it actually append
         encryptedObjectHash = aesEncrypt(data=objectHash, key=objectKey)
         
         messageData = {keyHash:keyHash, dataHash:encryptedObjectHash, data:encryptedObjectData, objectName:target, requestNum:reqNum}
