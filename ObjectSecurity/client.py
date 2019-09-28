@@ -1,6 +1,10 @@
 import socket
 from messageDecoder import *
 from enum import IntEnum
+from rsa import ObjSRSA as RSA
+from diffie_hellman import ObjSDH as DH 
+from aes import ObjSAES as AES
+from Crypto.Hash import SHA256
 
 class ClientState(IntEnum):
     UNINITIALZED = 0
@@ -104,26 +108,27 @@ def runClient(serverKeyFile, objectKeyFile, requestedObjects, host, port=7734): 
             
 """
 Initiates the connection to the server
-
+https://github.com/AlexBlumer/AdvCompSec
 :param server:      A ServerData object.
 
 :returns:   success - a boolean representing whether the connection was successful
 """
 def initiateConnection(server)
-    ownPubKeyHash = getOwnPubKeyHash()
-    ownPrivKey = getOwnPrivKey()
-    serverPubKey = None
-    
+
+    ownPubKey, ownPrivKey = RSA.generate_key(length = 1024 ,keyFile = '') 
+    hash_object = SHA256.new()
+    hash_object.update(base64.b64encode(bytes(ownPubKey,'utf-8')))
+    ownPubKeyHash = hash_object.digest()
+    serverPubKey = RSA.importServerKey()
     sock = server.getSocket()
     sock.setTimeout(responseTimeout)
-    
     # Send connection request
     sendMsgData = {key:ownPubKeyHash}
     sendMsg = Message(MessageType.CONNECT_REQUEST, sendMsgData)
     sendMsgBytes = sendMsg.toBytes()
     sock.send(sendMsgBytes)
-    
     ownDhVal = None
+
     while server.getConnectionState() < ClientState.DATA_EXCHANGE: # TODO add in max resend
         data = sock.recv(512)
         
@@ -193,9 +198,9 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
             server.setConnectionState(ClientState.SHUTDOWN_COMPLETE)
             return
         
-        dhVal, privDhVal = createDiffieHellmanValue()
+        dhVal, privDhVal = DH.createDiffieHellmanValue()
         
-        sessionKey = createDiffieHellmanKey(privateVal=privDhVal, sharedVal=serverDhVal)
+        sessionKey = DH.createDiffieHellmanKey(sharedVal=serverDhVal, privateVal=privDhVal)
         server.setSessionKey(sessionKey)
     
     sendMsgData = {exchangeValue:dhVal}
@@ -218,7 +223,7 @@ def handleKeyAdvertisement(server, data):
     
     keyHashes = None
     try:
-        unencryptedData = aesDecrypt(data=data, key=server.getSessionKey())
+        unencryptedData = AES.decrypt(data=data, key=server.getSessionKey())
         msg = Message.fromBytes(unencryptedData)
         keyHashes = msg.getObjectKeyHashes()
         if keyHashes in {False, None}:
@@ -233,7 +238,7 @@ def handleKeyAdvertisement(server, data):
     allowedKeys = getAllowedKeyHashes()
     sendMsgData = {"keys":allowedKeys}
     sendMsg = Message(MessageType.KEY_ADVERTISEMENT)
-    sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     sock.send(sendMsgBytes)
     return True
 
@@ -247,7 +252,7 @@ Handles key advertisement acks. If called while in KEYS_ADVERTISED, updates the 
 """
 def handleKeyAdvertisementAck(server, data):
     try:
-        unencryptedData = aesDecrypt(data=data, key=server.getSessionKey())
+        unencryptedData = AES.decrypt(data=data, key=server.getSessionKey())
         msg = Message.fromBytes(unencryptedData)
         if msg.getType() != MessageType.KEY_ADVERTISEMENT_ACK:
             return False
