@@ -145,10 +145,13 @@ https://github.com/AlexBlumer/AdvCompSec
 """
 def initiateConnection(server, ownKeyFile):
 
-    ownPubKey, ownPrivKey = RSA.getKeys(keyFile = ownKeyFile)
-    print("Pub Key: '{}'".format(ownPubKey))
-    print("Priv Key: '{}'".format(ownPrivKey))
-    ownPubKeyHash = getHash(ownPubKey.exportKey())
+    ownPrivKey, ownPubKey = RSA.getKeys(keyFile = ownKeyFile)
+    pubKeyString = ownPubKey.exportKey('PEM').decode("utf-8")
+    pubKeyString = pubKeyString[(pubKeyString.find('\n') + 1):pubKeyString.rfind('\n')]
+    pubKeyString = pubKeyString.replace('\n', '')
+    pubKeyString = pubKeyString.replace('\r', '')
+    print("pub key bytes: {}".format(bytes(pubKeyString, 'ascii')))
+    ownPubKeyHash = getHash(bytes(pubKeyString, 'ascii'))
     serverPubKey = RSA.importServerKey()
     sock = server.getSocket()
     sock.settimeout(RESPONSE_TIMEOUT)

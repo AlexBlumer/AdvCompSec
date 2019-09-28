@@ -76,7 +76,7 @@ class Message:
         if self.type != MessageType.CONNECT_REQUEST and self.type != MessageType.CONNECT_RESPONSE:
             return False
         
-        return self.data.get("keyHash")
+        return self.data.get("key")
     
     # Returns Diffie-Hellman exchange paramaters if it is there, None if it is not there, or False if it is the wrong message type
     # Only CONNECT_RESPONSE should have this value

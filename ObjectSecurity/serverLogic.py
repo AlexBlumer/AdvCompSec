@@ -11,6 +11,8 @@ from getopt import getopt
 # TODO figure out actual max length of packets for receiving
 # TODO resends
 
+RESPONSE_TIMEOUT = 0.25 # 250 ms
+
 class ClientState(IntEnum):
     UNINITIALZED = 0
     HANDSHAKE_STARTED = 1
@@ -104,6 +106,7 @@ def runServer(clientKeyFile, objectKeyFile, localKeyFile, address='', port=7734)
     clientKeys = getAllowableKeys(clientKeyFile)
     clientKeyDict = {}
     for key in clientKeys:
+        print(bytes(key,'utf-8'))
         keyHash = getHash(bytes(key,'utf-8'))
         clientKeyDict[keyHash] = key
     global objectKeyDict
@@ -119,7 +122,11 @@ def runServer(clientKeyFile, objectKeyFile, localKeyFile, address='', port=7734)
     sock.bind( (address, port) ) # '' indicates bind to all IP addresses
     
     while True:
-        _, recvAddress = sock.recvfrom(512, socket.MSG_PEEK) # Don't read the message, just get the address
+        sock.settimeout(0.5)
+        try:
+            _, recvAddress = sock.recvfrom(1024, socket.MSG_PEEK) # Don't read the message, just get the address
+        except socket.timeout:
+            continue # TODO check for an exit request? otherwise need ^C to quit
         
         connSock = sock.dup()
         connSock.connect(recvAddress)
@@ -135,6 +142,7 @@ def runServer(clientKeyFile, objectKeyFile, localKeyFile, address='', port=7734)
         if client.getConnectionState() == ServerState.DATA_EXCHANGE:
             print("Connection from IP '{}' and port {} successful".format(host, port))
         else:
+            print("Connection attempt from IP '{}' and port {} failed".format(host, port))
             continue
         
         dataExchangeLoop(client)
@@ -151,31 +159,38 @@ def completeConnectionServer(client, localKeyFile):
     ownKey = RSA.getKeys(localKeyFile)
     
     connected = True
-    sock.settimeout(60)
+    sock.settimeout(RESPONSE_TIMEOUT)
+    resendCount = 0
+    maxResendCount = 10
     # Split or otherwise async?
-    while client.getConnectionState() < ServerState.DATA_EXCHANGE: # TODO give max timeouts before assuming connection dead
-        # data, _ancData, msgFlags, address= connSock.recvmsg(512)
-        # data = connSock.recv(512)
+    while client.getConnectionState() < ServerState.DATA_EXCHANGE and resendCount < maxResendCount:
+        # data, _ancData, msgFlags, address= connSock.recvmsg(1024)
+        # data = connSock.recv(1024)
         try:
-            data = sock.recv(512)
+            data = sock.recv(1024)
         except socket.timeout:
             data = -1
         
         state = client.getConnectionState()
         
-        if data == -1:
-            shutdownConnection(connSock)
-        
         if state == ServerState.HANDSHAKE_STARTED:
+            print("Preparing initiall connect response") # DEBUG
             success, params, sendVal, privDhVal = handleConnectRequest(client, data)
+            if not success: # It wasn't a valid connection request, so ignore it
+                client.setConnectionState(ClientState.SHUTDOWN_COMPLETE)
+                print("Invalid connection response") # DEBUG
         elif state == ServerState.CONNECT_RESPONSE_SENT:
+            print("Preparing initiall DH response") # DEBUG
             success = handleDiffieHellmanResponse(client, data, privDhVal)
             if not success and client.getConnectionState() <= ServerState.CONNECT_RESPONSE_SENT: # Not a DH-response and not a total failure
                 # Resend the connect response
                 success, _, _ = handleConnectRequest(client, data, params, sentVal)
+                print("Preparing secondary connect response") # DEBUG
         elif state == ServerState.KEYS_ADVERTISED:
+            print("Preparing initiall key advertisement response") # DEBUG
             success = handleKeyAdvertisementServer(client, data)
             if not success and client.getConnectionState() <= ServerState.KEYS_ADVERTISED: # Not a DH-response and not a total failure
+                print("Preparing secondary DH response") # DEBUG
                 # Resend the key advertisement
                 success = handleDiffieHellmanResponse(client, data)
 
@@ -188,7 +203,7 @@ def dataExchangeLoop(client):
     
     while client.getConnectionState() == ServerState.DATA_EXCHANGE and """curtime""" < lastMessageTime + connectionTimeout:
         try:
-            data = sock.recv(512)
+            data = sock.recv(1024)
         except socket.timeout:
             dat == -1
         
@@ -241,22 +256,26 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
         msg = Message.fromBytes(data)
         pubKeyHash = msg.getPublicKeyHash()
         if pubKeyHash == False or pubKeyHash == None: # Not a valid CONNECT_REQUEST. Probably an encrypted message that start with the right number
+            print ("No pub key hash") # DEBUG
             return False, None, None, None
     except: # Not a proper message, likely wrong level of encryption
+        print ("Bad connect request message") # DEBUG
         return False, None, None, None
     
     privDhVal = None
-    if state == ServerState.HANDSHAKE_STARTED: # Need to save data from CONNECT_REQUEST
+    if client.getConnectionState() == ServerState.HANDSHAKE_STARTED: # Need to save data from CONNECT_REQUEST
         clientPublicKey = clientKeyDict.get(pubKeyHash)
+        print("key hash: {}".format(pubKeyHash)) # DEBUG
+        print("dict: {}".format(clientKeyDict)) # DEBUG
         
         if clientPublicKey == None: # An unknown person
             client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
+            print ("can't find pub key from hash") # DEBUG
             return False, None, None, None
         else:
             client.setConnectionState(ServerState.CONNECT_RESPONSE_SENT)
             client.setPubKey(clientPublicKey)
             
-            dhParams = getDiffieHellmanParams()
             dhVal, privDhVal = DH.createDiffieHellmanValue()
         
     ownKey = RSA.generate_key()
@@ -368,7 +387,7 @@ def handleShutdown(client):
     sock.send(sendMsgBytes)
     
     while client.getConnectionState() != ServerState.SHUTDOWN_COMPLETE and resendCount < maxResendCount:
-        data = sock.recv(512)
+        data = sock.recv(1024)
         
         if data == -1:
             sock.send(sendMsgBytes)
