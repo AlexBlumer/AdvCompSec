@@ -10,23 +10,23 @@ class ObjSRSA:
         with open(keyFile,'wb') as f:
             f.write(privateKey.export_key('PEM'))
             f.write(b'  ')
-            f.write(publicKey)
+            f.write(publicKey.export_key('PEM'))
         return (publicKey, privateKey)
 
-    def encrypt(key , message, key):
+    def encrypt(key , message):
         encrypted = key.encrypt(bytes(message,'UTF-8'), 32)
         print('encrypted message:' + str(encrypted)) #ciphertext
         return encrypted
 
-    def decrypt(key, ciphertext, key):
+    def decrypt(key, ciphertext):
         decrypted = key.decrypt(ast.literal_eval(str(encrypted)))
         print('decrypted' + str(decrypted))
     def importServerKey():
         with open('public.pem','rb') as f:
             return RSA.importKey(f.read())
     def getKeys(keyFile):
-        privKey, pubKey = None
-        with open(privKeyFile, 'rb') as f:
+        privKey = pubKey = None
+        with open(keyFile, 'rb') as f:
             result = f.read()
             keys = result.split(b'  ')
             privKey = RSA.importKey(keys[0])

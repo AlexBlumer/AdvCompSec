@@ -5,8 +5,11 @@ from rsa import ObjSRSA as RSA
 from diffie_hellman import ObjSDH as DH 
 from aes import ObjSAES as AES
 from Crypto.Hash import SHA256
+import base64
 from getopt import getopt
+import random
 
+RESPONSE_TIMEOUT = 0.25 # 250 ms
 # TODO finish helper functions
 # TODO figure out actual max length of packets for receiving
 # TODO resends
@@ -88,23 +91,32 @@ class ServerData:
         self.pop(requestNumber)
 
 
-def runClient(serverKeyFile, objectKeyFile, requestedObjects, host, port=7734): # '' indicates bind to all IP addresses
-    global serverKeys
-    serverKeys = getKeys(serverKeyFile)
-    global objectKeys
-    objectKeys = getKeys(objectKeyFile)
+def runClient(serverKeyFile, objectKeyFile, localKeyFile, requestedObjects, host, port=7734):
+    global serverKeyDict
+    serverKeys = getAllowableKeys(serverKeyFile)
+    serverKeyDict = {}
+    for key in serverKeys:
+        keyHash = getHash(bytes(key,'utf-8'))
+        serverKeyDict[keyHash] = key
+    global objectKeyDict
+    objectKeys = getAllowableKeys(objectKeyFile)
+    objectKeyDict = {}
+    for key in objectKeys:
+        keyHash = getHash(bytes(key,'utf-8'))
+        objectKeyDict[keyHash] = key
 
     if not isinstance(port, int) or port < 0 or port > 65535:
         raise Exception("Invalid port. Should be an integer between 0 and 65535, inclusive.")
-    sock = socket.socket(type=SOCK_DGRAM)
-    sock.bind(socket.INADDR_ANY) # bind to any open addresss
+    sock = socket.socket(type=socket.SOCK_DGRAM)
+    localPort = random.randint(1024, 65535)
+    sock.bind( ('', localPort) ) # bind to any open addresss
     
     sock.connect( (host, port) )
     
     server = ServerData(host=host, port=port, sock=sock, connectionState=ClientState.HANDSHAKE_STARTED)
     
     print("Initiating connection to host '{}' and port {}".format(host, port))
-    success = initiateConnection(server)
+    success = initiateConnection(server, localKeyFile)
      
     if not success:
         print("Connection to host '{}' and port {} failed".format(host, port))
@@ -131,22 +143,23 @@ https://github.com/AlexBlumer/AdvCompSec
 
 :returns:   success - a boolean representing whether the connection was successful
 """
-def initiateConnection(server)
+def initiateConnection(server, ownKeyFile):
 
-    ownPubKey, ownPrivKey = RSA.generate_key(length = 1024 ,keyFile = '') 
-    hash_object = SHA256.new()
-    hash_object.update(base64.b64encode(bytes(ownPubKey,'utf-8')))
-    ownPubKeyHash = hash_object.digest()
+    ownPubKey, ownPrivKey = RSA.getKeys(keyFile = ownKeyFile)
+    print("Pub Key: '{}'".format(ownPubKey))
+    print("Priv Key: '{}'".format(ownPrivKey))
+    ownPubKeyHash = getHash(ownPubKey.exportKey())
     serverPubKey = RSA.importServerKey()
     sock = server.getSocket()
-    sock.setTimeout(responseTimeout)
+    sock.settimeout(RESPONSE_TIMEOUT)
     # Send connection request
-    sendMsgData = {key:ownPubKeyHash}
+    sendMsgData = {"key":ownPubKeyHash}
     sendMsg = Message(MessageType.CONNECT_REQUEST, sendMsgData)
     sendMsgBytes = sendMsg.toBytes()
     sock.send(sendMsgBytes)
     
     maxResendCount = 10
+    resendCount = 0
     ownDhVal = None
     while server.getConnectionState() < ClientState.DATA_EXCHANGE and resendCount < maxResendCount:
         data = None
@@ -200,7 +213,7 @@ def dataRequest(server, object, objectKeyHash):
     server.setRequestNumberData(reqNum, objectKeyHash)
     sessionKey = server.getSessionKey()
     
-    sendMsgData = {target:object, keyHash:objectKeyHash, requestNum:reqNum}
+    sendMsgData = {"target":object, "keyHash":objectKeyHash, "requestNum":reqNum}
     sendMsg = Message(MessageType.OBJECT_REQUEST, sendMsgData)
     sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
     sock.send(sendMsgBytes)
@@ -268,7 +281,7 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
         sessionKey = DH.createDiffieHellmanKey(sharedVal=serverDhVal, privateVal=privDhVal)
         server.setSessionKey(sessionKey)
     
-    sendMsgData = {exchangeValue:dhVal}
+    sendMsgData = {"exchangeValue":dhVal}
     sendMsg = Message(MessageType.DIFFIE_HELLMAN_RESPONSE, sendMsgData)
     sendMsgBytes = rsaEncrypt(data=sendMsg.toBytes(), pubKey=server.getPubKey())
     sendMsgBytes = rsaEncrypt(data=sendMsgBytes, privKey=ownPrivKey)
@@ -362,7 +375,7 @@ def handleObjectRequestAck(server, data):
     
     sock = server.getSocket()
     sessionKey = server.getSessionKey()
-    sendMsgData = {requestNum:reqNum}
+    sendMsgData = {"requestNum":reqNum}
     sendMsg = Message(MessageType.DATA_ACK, sendMsgData)
     sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
     sock.send(sendMsgBytes)
@@ -408,7 +421,7 @@ def handleDataResponse(server, msg):
     sock = server.getSocket()
     sessionKey = server.getSessionKey()
     
-    sendMsgData = {requestNum:reqNum}
+    sendMsgData = {"requestNum":reqNum}
     sendMsg = Message(MessageType.DATA_ACK, sendMsgData)
     sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
     sock.send(sendMsgBytes)
@@ -420,7 +433,7 @@ def initiateShutdown(server):
     server.setConnectionState(ClientState.SHUTDOWN_SENT)
     
     sock = server.getSocket()
-    sock.setTimeout(responseTimeout)
+    sock.setTimeout(RESPONSE_TIMEOUT)
     
     maxResendCount = 10
     resendCount = 0
@@ -455,6 +468,20 @@ def initiateShutdown(server):
     
     sock.close()
 
+def getHash(bytes):
+    hash_object = SHA256.new()
+    hash_object.update(base64.b64encode(bytes))
+    return hash_object.digest()
+
+def getAllowableKeys(fileName):
+    keys = set()
+    with open(fileName, 'r') as f:
+        line = f.readline()
+        while line:
+            keys.add(line)
+            line = f.readline()
+    return keys
+
 def main():
     """
     usage: python client.py OPTIONS FILE...
@@ -462,8 +489,9 @@ def main():
     Options:
     -h  <host> --  target host. can be IPv4 or a url
     -p <port>  --  target port. Optional, defaults to 7734
-    -s <serverKeyFile> -- a file containing the public keys and their hashes for all known servers
-    -o <objectKeyFile> -- a file containing the keys and their hashes for decrypting objects
+    -s <serverKeyFile> -- a file containing the public keys for all known servers
+    -o <objectKeyFile> -- a file containing the keys for decrypting objects
+    -l <localKeyFile> -- a file containing the public and private keys for this client
     
     The program will request all files from the target server (specifiedin options), saving them locally to files of the same name.
     If no files are specified then a connection attempt will be made, then shutdown immediately
@@ -473,8 +501,8 @@ def main():
     port = 7734
     serverKeyFile = None
     objectKeyFile = None
-    files = set()
-    optlist, remainingArgs = getopt(sys.argv[1:], 'h:p:s:o:')
+    localKeyFile = None
+    optlist, remainingArgs = getopt(sys.argv[1:], 'h:p:s:o:l:')
     for optSet in optlist:
         opt = optSet[0]
         if opt == '-h':
@@ -485,7 +513,9 @@ def main():
             serverKeyFile = optSet[1]
         if opt == '-o':
             objectKeyFile = optSet[1]
-    files = remainingArgs
+        if opt == '-l':
+            localKeyFile = optSet[1]
+    targetFiles = remainingArgs
     
     optionsValid = True
     if serverKeyFile == None:
@@ -497,11 +527,14 @@ def main():
     if objectKeyFile == None:
         optionsValid = False
         print("Object key file must be specified. Use '-o <objectKeyFile>'")
+    if localKeyFile == None:
+        optionsValid = False
+        print("local key file must be specified. Use '-l <localKeyFile>'")
     
     if not optionsValid:
         return
     
-    runClient(serverKeyFile, objectKeyFile, files, host, port)
+    runClient(serverKeyFile, objectKeyFile, localKeyFile, targetFiles, host, port)
 
 if __name__ == "__main__":
     main()
