@@ -89,15 +89,15 @@ class ServerData:
     def setRequestNumberState(self, requestNumber, state):
         self.requestNumbers[requestNumber] = state
     
-    def getRequestNumberData(self):
-        return self.requestData
+    def getRequestNumberData(self, reqNum):
+        return self.requestData.get(reqNum)
     def setRequestNumberData(self, requestNumber, data):
         self.requestData[requestNumber] = data
     def clearRequestNumberData(self, requestNumber):
         self.pop(requestNumber)
 
 
-def runClient(serverKeyFile, objectKeyFile, localKeyFile, saveFileLocation, requestedObjects, host, port=7734):
+def runClient(serverKeyFile, objectKeyFile, localKeyFile, requestedObjects, saveFileLocation, host, port=7734):
     global serverKeyDict
     serverKeys = getAllowableKeys(serverKeyFile)
     serverKeyDict = {}
@@ -138,7 +138,7 @@ def runClient(serverKeyFile, objectKeyFile, localKeyFile, saveFileLocation, requ
             if success:
                 print("Successfully retrieved object '{}'".format(object))
             else:
-                print("Failed to retreive object '{}' with status '{}'".format(object, status))
+                print("Failed to retreive object '{}' with status '{}'".format(object, status.name))
     
     initiateShutdown(server)
             
@@ -233,7 +233,7 @@ def dataRequest(server, object, objectKeyHash):
     sock = server.getSocket()
     
     server.setRequestNumberState(reqNum, DataExchangeState.REQUEST_SENT)
-    server.setRequestNumberData(reqNum, objectKeyHash)
+    server.setRequestNumberData(reqNum, {'hash':objectKeyHash, 'name':object})
     sessionKey = server.getSessionKey()
     
     sendMsgData = {"target":object, "keyHash":objectKeyHash, "requestNum":reqNum}
@@ -253,12 +253,17 @@ def dataRequest(server, object, objectKeyHash):
             continue
         
         try:
-            msg = Message.fromBytes()
+            print("data: {}".format(data)) # DEBUG
+            msg = Message.fromBytes(data)
+            print("data response received".format()) # DEBUG
             handleDataResponse(server, msg)
         except: # not a valid data response, should probably be a late KeyAdvertisementAck or an objRequestAck
+            print("Message not a data response".format()) # DEBUG
             success, status, recvReqNum = handleObjectRequestAck(server, data)
             if success and recvReqNum == reqNum:
-                return False, status
+                return False, DataExchangeStatus(status)
+            else:
+                raise
     return True, None
 
 """
@@ -427,31 +432,38 @@ Handles data responses. Always sends a data ack. If the request number is unfini
 """
 def handleDataResponse(server, msg):
     reqNum = msg.getRequestNumber()
-    keyHash = msg.getKeyHash()
+    keyHash = msg.getObjectKeyHash()
     dataHash = msg.getObjectDataHash()
     data = msg.getObjectData()
     objectName = msg.getObjectName()
     
+    print("msg data: {}".format(msg.data)) # DEBUG
     if reqNum in {False, None} or keyHash in {False, None} or dataHash in {False, None} or data in {False, None} or objectName in {False, None}:
+        print("Missing value") # DEBUG
         return False
     
     if server.checkRequestNumberUsed(reqNum) == False:
+        print("unknown request number: {}".format(reqNum)) # DEBUG
         return False
-    if objectName != server.getRequestNumberData(reqNum):
+    requestData = server.getRequestNumberData(reqNum)
+    if requestData == None or objectName != requestData['name']:
+        print("Object name '{}' doesnt match with requested '{}'".format(objectName, requestData['name'])) # DEBUG
         return False
-    key = objectKeys.get(keyHash)
+    key = objectKeyDict.get(keyHash)
+    key = base64.b64decode(key)
     if key == None:
         return False
     
     unencryptedDataHash = AES.decrypt(data=dataHash, key=key)
     unencryptedData = AES.decrypt(data=data, key=key)
     
-    preHashValue = bytearray(unencryptedData).append(bytes(objectName))
-    if hash( bytes(preHashValue) ) != unencryptedDataHash: # Not the correct object
+    preHashValue = bytearray(unencryptedData) + bytearray(objectName, "ascii")
+    if getHash( bytes(preHashValue) ) != unencryptedDataHash: # Not the correct object
         return False
     
-    if server.getRequestNumberState() == DataExchangeState.REQUEST_SENT:
-        saveObject(data=unencryptedData, name=objectName, saveFileLocation=server.getSaveFileLocation)
+    if server.getRequestNumberState(reqNum) == DataExchangeState.REQUEST_SENT:
+        saveObject(unencryptedData, objectName, server.getSaveFileLocation())
+        server.setRequestNumberState(reqNum, DataExchangeState.EXCHANGE_COMPLETE)
     
     sock = server.getSocket()
     sessionKey = server.getSessionKey()
@@ -528,6 +540,11 @@ def selectObjectKeyHash(server, objectKeys):
 def generateRequestNumber():
     return uuid.uuid1().int
 
+def saveObject(data, name, saveLoc):
+    f = open(saveLoc + name, "wb+")
+    f.write(data)
+    f.close()
+
 def main():
     """
     usage: python client.py OPTIONS FILE...
@@ -566,6 +583,7 @@ def main():
         if opt == '-f':
             saveFileLocation = optSet[1]
     targetFiles = remainingArgs
+    print("remaingingArgs: {}".format(targetFiles))
     
     optionsValid = True
     if serverKeyFile == None:

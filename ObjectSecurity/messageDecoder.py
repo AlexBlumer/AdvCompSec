@@ -143,6 +143,22 @@ class Message:
         
         return self.data.get("status")
     
+    # Returns the hash of the key used to encrypting the object if it is there, None if it is not there, or False if it is the wrong message type
+    # Only DATA_MESSAGE should have this value
+    def getObjectKeyHash(self):
+        if self.type != MessageType.DATA_MESSAGE:
+            return False
+        
+        return self.data.get("keyHash")
+    
+    # Returns the name the object if it is there, None if it is not there, or False if it is the wrong message type
+    # Only DATA_MESSAGE should have this value
+    def getObjectName(self):
+        if self.type != MessageType.DATA_MESSAGE:
+            return False
+        
+        return self.data.get("objectName")
+    
     # Returns encrypted data if it is there, None if it is not there, or False if it is the wrong message type
     # Only DATA_MESSAGE should have this value
     def getObjectData(self):

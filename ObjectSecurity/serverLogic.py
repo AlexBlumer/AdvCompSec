@@ -99,8 +99,8 @@ class ClientData:
     def setRequestNumberState(self, requestNumber, state):
         self.requestNumbers[requestNumber] = state
     
-    def getRequestNumberData(self):
-        return self.requestData
+    def getRequestNumberData(self, requestNumber):
+        return self.requestData.get(requestNumber)
     def setRequestNumberData(self, requestNumber, data):
         self.requestData[requestNumber] = data
     def clearRequestNumberData(self, requestNumber):
@@ -171,7 +171,7 @@ def runServer(clientKeyFile, objectKeyFile, localKeyFile, loadFileLocation, addr
         if client.getConnectionState() == ServerState.DATA_EXCHANGE:
             print("Connection from IP '{}' and port {} successful".format(host, port))
         else:
-            print("Connection attempt from IP '{}' and port {} failed".format(host, port))
+            print("Connection attempt from IP '{}' and port {} failed\n\n".format(host, port))
             connSock.close()
             sock.close()
             sock = socket.socket(type=socket.SOCK_DGRAM)
@@ -187,7 +187,7 @@ def runServer(clientKeyFile, objectKeyFile, localKeyFile, loadFileLocation, addr
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind( (address, localPort) ) # '' indicates bind to all IP addresses
         
-        print("Disconnected from client IP '{}' and port {}".format(host, port))
+        print("Disconnected from client IP '{}' and port {}\n\n".format(host, port))
         
 
 
@@ -483,10 +483,13 @@ Handles object requests received by the server and sends the data message. If th
 :param msg:         A Message object with type of OBJECT_REQUEST
 """
 def handleObjectRequest(client, msg): # TODO add an objReqAck
+    print("msg data: {}".format(msg.data)) # DEBUG
     reqNum = msg.getRequestNumber()
     target = msg.getTargetObject()
     keyHash = msg.getRequestedObjectKeyHash()
     sock = client.getSocket()
+    
+    print("didn't faile in fields") # DEBUG
     
     # Make sure all values exist
     if reqNum == False or reqNum == None or target == False or target == None or keyHash == False or keyHash == None:
@@ -495,9 +498,10 @@ def handleObjectRequest(client, msg): # TODO add an objReqAck
     
     if not isValidRequestNumber(reqNum) or not keyHash in objectKeyDict.keys(): # TODO create func and decide what makes a request number
         print("Bad request number or key hash") # DEBUG
+        print("reqNum: {} isvalid {}".format(reqNum, isValidRequestNumber(reqNum)))
         return
     elif not client.checkRequestNumberUsed(reqNum): # A new request
-        print("New request. Number {}".format(reqNum))
+        print("New request. Number {}".format(reqNum)) # DEBUG
         client.setRequestNumberState(reqNum, DataExchangeState.DATA_SENT)
         
         objectData = retrieveData(target, client.getLoadFileLocation())
@@ -518,10 +522,12 @@ def handleObjectRequest(client, msg): # TODO add an objReqAck
             sock.send(sendMsgBytes)
             return
         
+        print("object key: {}".format(objectKey))
+        objectKey = base64.b64decode(objectKey)
         encryptedObjectData = AES.encrypt(data=objectData, key=objectKey)
-        preHashValue = bytearray(objectData).append(bytes(target))
-        objectHash = hash(bytes(preHashValue)) # TODO make it actually append
-        encryptedObjectHash = AES.encrypt(data=objectHash, key=objectKey)
+        preHashValue = bytearray(objectData) + bytearray(target, "ascii")
+        objectHash = getHash(preHashValue) # TODO make it actually append
+        encryptedObjectHash = AES.encrypt(data=bytes(objectHash), key=objectKey)
         
         messageData = {"keyHash":keyHash, "dataHash":encryptedObjectHash, "data":encryptedObjectData, "objectName":target, "requestNum":reqNum}
         client.setRequestNumberData(reqNum, messageData) # Save the data to avoid recomputing for resends
@@ -573,7 +579,7 @@ def isValidRequestNumber(reqNum):
     id = uuid.UUID(int=reqNum)
     # Following line courtesy of user unutbu on the question stackoverflow.com/questions/3795554/extract-the-time-from-a-uuid-v1-in-python
     uuidTime = ((id.time - 0x01b21dd213814000)*100/1e9)
-    return time() - uuidTime < 5 # generated within the last 5 seconds
+    return time() - uuidTime < 30 # generated within the last 30 seconds
 
 def retrieveData(target, loadFileLocation):
     try:
@@ -604,7 +610,7 @@ def main():
     objectKeyFile = None
     loadFileLocation = ""
     files = set()
-    optlist, remainingArgs = getopt(sys.argv[1:], 'h:p:c:o:l:')
+    optlist, remainingArgs = getopt(sys.argv[1:], 'h:p:c:o:l:f:')
     for optSet in optlist:
         opt = optSet[0]
         if opt == '-h':
