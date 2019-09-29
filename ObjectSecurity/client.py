@@ -145,12 +145,15 @@ https://github.com/AlexBlumer/AdvCompSec
 """
 def initiateConnection(server, ownKeyFile):
 
+    global ownPrivKey
+    global ownPubKey
+    global ownPubKeyHash
+
     ownPrivKey, ownPubKey = RSA.getKeys(keyFile = ownKeyFile)
     pubKeyString = ownPubKey.exportKey('PEM').decode("utf-8")
     pubKeyString = pubKeyString[(pubKeyString.find('\n') + 1):pubKeyString.rfind('\n')]
     pubKeyString = pubKeyString.replace('\n', '')
     pubKeyString = pubKeyString.replace('\r', '')
-    print("pub key bytes: {}".format(bytes(pubKeyString, 'ascii')))
     ownPubKeyHash = getHash(bytes(pubKeyString, 'ascii'))
     serverPubKey = RSA.importServerKey()
     sock = server.getSocket()
@@ -170,7 +173,6 @@ def initiateConnection(server, ownKeyFile):
             data = sock.recv(512)
         except socket.timeout:
             data = -1
-            resendCount += 1
         
         success = False
         state = server.getConnectionState()
@@ -178,17 +180,21 @@ def initiateConnection(server, ownKeyFile):
             if data != -1:
                 success, ownDhVal = handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash) # TODO timeout currently tries to resend next data, not prev
             if not success and server.getConnectionState() <= ClientState.DIFFIE_HELLMAN_SENT:
+                print ("Resending connect request") # DEBUG
                 sock.send(sendMsgBytes) # Probably a timeout, resend the request
                 resendCount += 1
             else:
+                print ("Initial connect response received") # DEBUG
                 resendCount = 0
         elif state == ClientState.DIFFIE_HELLMAN_SENT:
             if data != -1:
                 success = handleKeyAdvertisement(server, data)
             if not success and server.getConnectionState() <= ClientState.DIFFIE_HELLMAN_SENT:
+                print ("Resending diffie hellman") # DEBUG
                 success, _ = handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, ownDhVal)
                 resendCount += 1
             else:
+                print ("Initial key advertisement received") # DEBUG
                 resendCount = 0
         elif state == ClientState.KEYS_ADVERTISED:
             if data != -1:
@@ -255,30 +261,36 @@ If called while in another state, it merely resends the response with the given 
 def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
     sock = server.getSocket()
     
+    print ("Attempting to parse connect response") # DEBUG
+    
     pubKeyHash = None
     serverDhVal = None
     dhParams = None
     try:
-        unencryptedData = rsaDecrypt(data=data, privateKey=ownPrivKey)
+        unencryptedData = RSA.decrypt(ownPrivKey, data)
         msg = Message.fromBytes(unencryptedData)
         pubKeyHash = msg.getPublicKeyHash()
         serverDhVal = msg.getDiffieHellmanValue()
-        dhParams = msg.getDiffieHellmanParameters()
-        if pubKeyHash == False or pubKeyHash == None or pubKeyHash == False or serverDhVal == None or serverDhVal == False or dhParams == None: # Not a valid CONNECT_RESPONSE. Probably an encrypted message that start with the right number
+        print(msg.data)
+        if pubKeyHash == False or pubKeyHash == None or serverDhVal == False or serverDhVal == None: # Not a valid CONNECT_RESPONSE. Probably an encrypted message that start with the right number
+            print ("Bad connect response message") # DEBUG
             return (False, None)
     except: # Not a proper message, likely wrong level of encryption
-        if data != -1: # indicates a timeout, resend the message
+        if data != -1: # not a timeout
+            print ("Not proper encryption for a connect response") # DEBUG
             return (False, None)
     
     if server.getConnectionState() == ClientState.HANDSHAKE_STARTED:
-        server.setConnectionState(ClientState.CONNECT_RESPONSE_RECEIVED)
+        print ("Initial connect response message received") # DEBUG
         serverPubKey = serverKeys.get(pubKeyHash)
-        server.setPubKey(serverPubKey)
         if serverPubKey == None:
             print("Cannot find server public key. Exiting...")
             server.setConnectionState(ClientState.SHUTDOWN_COMPLETE)
             return
         
+        server.setConnectionState(ClientState.CONNECT_RESPONSE_RECEIVED)
+        serverPubKey = RSA.pubKeyFromLine(serverPubKey)
+        server.setPubKey(serverPubKey)
         dhVal, privDhVal = DH.createDiffieHellmanValue()
         
         sessionKey = DH.createDiffieHellmanKey(sharedVal=serverDhVal, privateVal=privDhVal)

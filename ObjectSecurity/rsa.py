@@ -19,8 +19,9 @@ class ObjSRSA:
         return encrypted
 
     def decrypt(key, ciphertext):
-        decrypted = key.decrypt(ast.literal_eval(str(encrypted)))
+        decrypted = key.decrypt(ast.literal_eval(str(ciphertext)))
         print('decrypted' + str(decrypted))
+        return decrypted
     def importServerKey():
         with open('public.pem','rb') as f:
             return RSA.importKey(f.read())
@@ -32,4 +33,17 @@ class ObjSRSA:
             privKey = RSA.importKey(keys[0])
             pubKey = RSA.importKey(keys[1])
         return (privKey, pubKey)
-        
+    
+    def pubKeyFromLine(line):
+        pemStyleString = "-----BEGIN PUBLIC KEY-----\n" + line[0:64] + '\n' + line[64:128] + '\n' + line[128:192] + '\n' + line[192:] + "\n-----END PUBLIC KEY-----"
+        return RSA.importKey(pemStyleString)
+
+def main():
+    import sys
+    length = sys.argv[1]
+    fileName = sys.argv[2]
+    print("Generating key of length {} in file '{}'".format(length, fileName))
+    generate_key(int(length), fileName)
+
+if __name__ == "__main__":
+    main()

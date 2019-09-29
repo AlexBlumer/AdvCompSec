@@ -10,6 +10,7 @@ from getopt import getopt
 # TODO finish helper functions
 # TODO figure out actual max length of packets for receiving
 # TODO resends
+# TODO actually fail if no responses in completeConnectionServer
 
 RESPONSE_TIMEOUT = 0.25 # 250 ms
 
@@ -115,6 +116,18 @@ def runServer(clientKeyFile, objectKeyFile, localKeyFile, address='', port=7734)
     for key in objectKeys:
         keyHash = getHash(bytes(key,'utf-8'))
         objectKeyDict[keyHash] = key
+        
+    global ownPrivKey
+    global ownPubKey
+    global ownPubKeyHash
+    
+    ownPrivKey, ownPubKey = RSA.getKeys(keyFile = localKeyFile)
+    pubKeyString = ownPubKey.exportKey('PEM').decode("utf-8")
+    pubKeyString = pubKeyString[(pubKeyString.find('\n') + 1):pubKeyString.rfind('\n')]
+    pubKeyString = pubKeyString.replace('\n', '')
+    pubKeyString = pubKeyString.replace('\r', '')
+    # print("pub key bytes: {}".format(bytes(pubKeyString, 'ascii'))) # DEBUG
+    ownPubKeyHash = getHash(bytes(pubKeyString, 'ascii'))
 
     if not isinstance(port, int) or port < 0 or port > 65535:
         raise Exception("Invalid port. Should be an integer between 0 and 65535, inclusive.")
@@ -137,7 +150,7 @@ def runServer(clientKeyFile, objectKeyFile, localKeyFile, address='', port=7734)
         client = ClientData(host=host, port=port, sock=connSock, connectionState=ServerState.HANDSHAKE_STARTED)
         
         print("Connection initiated by IP '{}' and port {}".format(host, port))
-        connectionSuccess = completeConnectionServer(client, localKeyFile)
+        connectionSuccess = completeConnectionServer(client)
         
         if client.getConnectionState() == ServerState.DATA_EXCHANGE:
             print("Connection from IP '{}' and port {} successful".format(host, port))
@@ -149,14 +162,13 @@ def runServer(clientKeyFile, objectKeyFile, localKeyFile, address='', port=7734)
         
 
 
-def completeConnectionServer(client, localKeyFile):
+def completeConnectionServer(client):
 
     sock = client.getSocket()
     
     privDhVal = None
     params = None
     sendVal = None
-    ownKey = RSA.getKeys(localKeyFile)
     
     connected = True
     sock.settimeout(RESPONSE_TIMEOUT)
@@ -173,26 +185,41 @@ def completeConnectionServer(client, localKeyFile):
         
         state = client.getConnectionState()
         
+        success = False
         if state == ServerState.HANDSHAKE_STARTED:
-            print("Preparing initiall connect response") # DEBUG
-            success, params, sendVal, privDhVal = handleConnectRequest(client, data)
+            if data != -1:
+                print("Preparing initiall connect response") # DEBUG
+                success, params, sendVal, privDhVal = handleConnectRequest(client, data)
             if not success: # It wasn't a valid connection request, so ignore it
-                client.setConnectionState(ClientState.SHUTDOWN_COMPLETE)
+                client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
                 print("Invalid connection response") # DEBUG
+            else:
+                resendCount = 0
         elif state == ServerState.CONNECT_RESPONSE_SENT:
-            print("Preparing initiall DH response") # DEBUG
-            success = handleDiffieHellmanResponse(client, data, privDhVal)
+            if data != -1:
+                print("Preparing initiall DH response") # DEBUG
+                success = handleDiffieHellmanResponse(client, data, privDhVal)
             if not success and client.getConnectionState() <= ServerState.CONNECT_RESPONSE_SENT: # Not a DH-response and not a total failure
                 # Resend the connect response
                 success, _, _ = handleConnectRequest(client, data, params, sentVal)
+                resendCount += 1
                 print("Preparing secondary connect response") # DEBUG
+            else:
+                resendCount = 0
         elif state == ServerState.KEYS_ADVERTISED:
-            print("Preparing initiall key advertisement response") # DEBUG
-            success = handleKeyAdvertisementServer(client, data)
+            if data != -1:
+                print("Preparing initiall key advertisement response") # DEBUG
+                success = handleKeyAdvertisementServer(client, data)
             if not success and client.getConnectionState() <= ServerState.KEYS_ADVERTISED: # Not a DH-response and not a total failure
                 print("Preparing secondary DH response") # DEBUG
                 # Resend the key advertisement
                 success = handleDiffieHellmanResponse(client, data)
+                resendCount += 1
+            else:
+                resendCount = 0
+        
+        if resendCount >= maxResendCount:
+            client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
 
 def dataExchangeLoop(client):
     sock = client.getSocket()
@@ -265,21 +292,23 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
     privDhVal = None
     if client.getConnectionState() == ServerState.HANDSHAKE_STARTED: # Need to save data from CONNECT_REQUEST
         clientPublicKey = clientKeyDict.get(pubKeyHash)
-        print("key hash: {}".format(pubKeyHash)) # DEBUG
-        print("dict: {}".format(clientKeyDict)) # DEBUG
         
         if clientPublicKey == None: # An unknown person
             client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
             print ("can't find pub key from hash") # DEBUG
             return False, None, None, None
         else:
+            clientPublicKey = RSA.pubKeyFromLine(clientPublicKey)
+            
             client.setConnectionState(ServerState.CONNECT_RESPONSE_SENT)
             client.setPubKey(clientPublicKey)
             
+            print("creating DH values") # DEBUG
             dhVal, privDhVal = DH.createDiffieHellmanValue()
-        
-    ownKey = RSA.generate_key()
-    sendMsgData = {"key": ownKey, "exchangeParams": params, "exchangeValue": sentVal}
+            print("dh value obtained") # DEBUG
+    
+    # print("Key hash: {}".format(ownPubKeyHash))
+    sendMsgData = {"key": ownPubKeyHash, "exchangeParams": params, "exchangeValue": sentVal}
     
     sendMsg = Message(MessageType.CONNECT_RESPONSE, sendMsgData)
     clientPubKey = client.getPubKey()
@@ -309,8 +338,10 @@ def handleDiffieHellmanResponse(clientData, data, privDhVal=None):
         msg = Message.fromBytes(unencryptedData)
         dhVal = msg.getDiffieHellmanValue()
         if dhVal == False or dhVal == None: # Not a valid DIFFIE_HELLMAN_RESPONSE. Probably an encrypted message that start with the right number
+            print ("Bad connect request message") # DEBUG
             return False
     except: # Not a proper message, likely wrong level of encryption
+        
         return False
     
     state = clientData.getConnectionState()
