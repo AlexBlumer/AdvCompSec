@@ -1,21 +1,14 @@
 from Crypto import Random
 
 class ObjSDH:
-    def __init__(self):
-        self.g = 5029469
-        self.n = 18
-<<<<<<< HEAD
-    def createDiffieHellmanKey(self, privateVal, sharedVal):
-        return (sharedVal ** privateVal) % self.n
-    def createDiffieHellmanValue(self):
-        dhPrivValue = Random.new().read
-        dhValue = (self.g ** value) % self.n
-        return(dhValue, dhPrivValue)
-=======
-    def createDiffieHellmanKey(self, receivedValue, secretValue):
-        return (receivedValue ** secretValue) % self.n
-    def createDiffieHellmanValue():
-        dhPrivValue = Random.new().read
-        dhValue = (self.g ** value) % self.n
+    
+    g = 5029469
+    n = 18
+    @classmethod
+    def createDiffieHellmanKey(cls, receivedValue, secretValue):
+        return (receivedValue ** secretValue) % cls.n
+    @classmethod
+    def createDiffieHellmanValue(cls):
+        dhPrivValue = int.from_bytes(Random.new().read(3), 'little')
+        dhValue = (cls.g ** dhPrivValue) % cls.n
         return(dhPrivValue,dhValue)
->>>>>>> 20982211542924bb24fdedb44263a7181f7d6bfb

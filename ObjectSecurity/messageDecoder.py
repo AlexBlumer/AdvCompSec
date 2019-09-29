@@ -1,4 +1,5 @@
 from enum import Enum, IntEnum, unique
+import cbor
 
 # TODO maybe add automatic hashes to to/fromBytes(), for integrity purposes
 # TODO add timestamp to connect request, response, and diffie hellman response to remove replay attacks
@@ -30,7 +31,7 @@ messageTypeSet = set(item for item in MessageType)
 class Message:
 
     def __init__(self, type, data = None):
-        if not type in messageTypeSet or type == MessageType.UNITIALIZED:
+        if not type in messageTypeSet or type == MessageType.UNINITIALIZED:
             raise Exception("Invalid type for created Message")
         if data == None and (type != MessageType.KEY_ADVERTISEMENT_ACK and type != MessageType.SHUTDOWN_CLOSER_ACK and type != MessageType.SHUTDOWN_CLOSEE_ACK):
             raise Exception("No data provided for Message type {}. Only KEY_ADVERTISEMENT_ACK, SHUTDOWN_CLOSEE_ACK and SHUTDOWN_CLOSER_ACK can have no data.")
@@ -75,7 +76,7 @@ class Message:
         if self.type != MessageType.CONNECT_REQUEST and self.type != MessageType.CONNECT_RESPONSE:
             return False
         
-        return self.data.get("keyHash")
+        return self.data.get("key")
     
     # Returns Diffie-Hellman exchange paramaters if it is there, None if it is not there, or False if it is the wrong message type
     # Only CONNECT_RESPONSE should have this value
