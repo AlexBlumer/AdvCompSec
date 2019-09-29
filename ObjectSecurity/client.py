@@ -267,7 +267,7 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
     serverDhVal = None
     dhParams = None
     try:
-        unencryptedData = RSA.decrypt(ownPrivKey, data)
+        unencryptedData = RSA.decrypt(data, ownPrivKey)
         msg = Message.fromBytes(unencryptedData)
         pubKeyHash = msg.getPublicKeyHash()
         serverDhVal = msg.getDiffieHellmanValue()
@@ -298,8 +298,8 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
     
     sendMsgData = {"exchangeValue":dhVal}
     sendMsg = Message(MessageType.DIFFIE_HELLMAN_RESPONSE, sendMsgData)
-    sendMsgBytes = rsaEncrypt(data=sendMsg.toBytes(), pubKey=server.getPubKey())
-    sendMsgBytes = rsaEncrypt(data=sendMsgBytes, privKey=ownPrivKey)
+    sendMsgBytes = RSA.encrypt(data=sendMsg.toBytes(), pubKey=server.getPubKey())
+    sendMsgBytes = RSA.encrypt(data=sendMsgBytes, privKey=ownPrivKey)
     sock.send(sendMsgBytes)
     
 """
@@ -455,7 +455,7 @@ def initiateShutdown(server):
     
     sessionKey = server.getSessionKey()
     sendMsg = Message(MessageType.SHUTDOWN_REQUEST)
-    sendMsgBytes = aesEncrypt(data=sendMsg, key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg, key=sessionKey)
     
     sock.send(sendMsgBytes)
     
@@ -469,12 +469,12 @@ def initiateShutdown(server):
         if data == -1:
             sock.send(sendMsgBytes)
         else:
-            unencryptedData = aesDecrypt(data=data, key=sessionKey)
+            unencryptedData = AES.decrypt(data=data, key=sessionKey)
             msg = Message.fromBytes(unencryptedData)
             if msg.type == MessageType.SHUTDOWN_CLOSEE_ACK:
                 server.setConnectionState(ClientState.SHUTDOWN_COMPLETE)
                 sendMsg = Message(MessageType.SHUTDOWN_CLOSER_ACK)
-                sendMsgBytes = aesEncrypt(data=sendMsg, key=sessionKey)
+                sendMsgBytes = AES.encrypt(data=sendMsg, key=sessionKey)
                 sock.send(sendMsgBytes)
             else:
                 sock.send(sendMsgBytes)

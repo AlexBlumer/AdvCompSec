@@ -13,13 +13,13 @@ class ObjSRSA:
             f.write(publicKey.export_key('PEM'))
         return (publicKey, privateKey)
 
-    def encrypt(key , message):
-        encrypted = key.encrypt(bytes(message,'UTF-8'), 32)
+    def encrypt(data, key):
+        encrypted = key.encrypt(data, 32)
         print('encrypted message:' + str(encrypted)) #ciphertext
         return encrypted
 
-    def decrypt(key, ciphertext):
-        decrypted = key.decrypt(ast.literal_eval(str(ciphertext)))
+    def decrypt(data, key):
+        decrypted = key.decrypt(ast.literal_eval(str(data)))
         print('decrypted' + str(decrypted))
         return decrypted
     def importServerKey():

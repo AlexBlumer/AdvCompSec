@@ -237,7 +237,7 @@ def dataExchangeLoop(client):
         if data == -1:
             continue
         
-        unencryptedData = aesDecrypt(key=sessionKey, data=data)
+        unencryptedData = AES.decrypt(key=sessionKey, data=data)
         
         msg = None
         type = None
@@ -313,6 +313,12 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
     sendMsg = Message(MessageType.CONNECT_RESPONSE, sendMsgData)
     clientPubKey = client.getPubKey()
     sendBytes = rsaEncrypt(data=sendMsg.toBytes(), pubKey=clientPublicKey)
+        
+    ownKey, _ = RSA.generate_key()
+    sendMsgData = {"key": ownKey, "exchangeParams": params, "exchangeValue": dhVal}
+    
+    sendMsg = Message(MessageType.CONNECT_RESPONSE, sendMsgData)
+    sendBytes = RSA.encrypt(data=sendMsg.toBytes(), pubKey=clientPublicKey)
     
     sock = client.getSocket()
     sock.send(sendBytes)
@@ -333,8 +339,8 @@ def handleDiffieHellmanResponse(clientData, data, privDhVal=None):
     try:
         privateKey = getOwnPrivateKey()
         clientPubKey = clientData.getPubKey()
-        unencryptedData = rsaDecrypt(data=data, key=privateKey)
-        unencryptedData = rsaDecrypt(data=unencryptedData, key=clientPubKey)
+        unencryptedData = RSA.decrypt(data=data, key=privateKey)
+        unencryptedData = RSA.decrypt(data=unencryptedData, key=clientPubKey)
         msg = Message.fromBytes(unencryptedData)
         dhVal = msg.getDiffieHellmanValue()
         if dhVal == False or dhVal == None: # Not a valid DIFFIE_HELLMAN_RESPONSE. Probably an encrypted message that start with the right number
@@ -357,7 +363,7 @@ def handleDiffieHellmanResponse(clientData, data, privDhVal=None):
     allowedKeys = getAllowedKeyHashes()
     sendMsgData = {"keys":allowedKeys}
     sendMsg = Message(MessageType.KEY_ADVERTISEMENT)
-    sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     
     sock = clientData.getSocket()
     sock.send(sendMsgBytes)
@@ -374,7 +380,7 @@ def handleKeyAdvertisementServer(clientData, data, privDhVal=None):
     validKeyHashes = None
     try:
         sessionKey = clientData.getSessionKey()
-        unencryptedData = aesDecrypt(data=data, key=sessionKey)
+        unencryptedData = AES.decrypt(data=data, key=sessionKey)
         msg = Message.fromBytes(unencryptedData)
         validKeyHashes = msg.getObjectKeyHashes()
         if validKeyHashes == False or validKeyHashes == None: # Not a valid KEY_ADVERTISEMENT.
@@ -390,7 +396,7 @@ def handleKeyAdvertisementServer(clientData, data, privDhVal=None):
         client.setObjectKeyHashes(validKeyHashes)
     
     sendMsg = Message(MessageType.KEY_ADVERTISEMENT_ACK)
-    sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     
     sock = clientData.getSocket()
     sock.send(sendMsgBytes)
@@ -413,7 +419,7 @@ def handleShutdown(client):
     
     sessionKey = client.getSessionKey()
     sendMsg = Message(MessageType.SHUTDOWN_CLOSEE_ACK)
-    sendMsgBytes = aesEncrypt(data=sendMsg, key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg, key=sessionKey)
     
     sock.send(sendMsgBytes)
     
@@ -423,7 +429,7 @@ def handleShutdown(client):
         if data == -1:
             sock.send(sendMsgBytes)
         else:
-            unencryptedData = aesDecrypt(data=data, key=sessionKey)
+            unencryptedData = AES.decrypt(data=data, key=sessionKey)
             msg = Message.fromBytes(unencryptedData)
             if msg.type == MessageType.SHUTDOWN_CLOSER_ACK:
                 client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
@@ -462,21 +468,21 @@ def handleObjectRequest(client, msg): # TODO add an objReqAck
             sessionKey = client.getSessionKey()
             sendMsgData = {"status":DataExchangeStatus.OBJ_NOT_FOUND, "requestNum":reqNum}
             sendMsg = Message(MessageType.OBJECT_REQUEST_ACK, sendMsgData)
-            sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+            sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
             sock.send(sendMsgBytes)
             return
         elif objectKey == None:
             sessionKey = client.getSessionKey()
             sendMsgData = {"status":DataExchangeStatus.UNKNOWN_KEY, "requestNum":reqNum}
             sendMsg = Message(MessageType.OBJECT_REQUEST_ACK, sendMsgData)
-            sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+            sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
             sock.send(sendMsgBytes)
             return
         
-        encryptedObjectData = aesEncrypt(data=objectData, key=objectKey)
+        encryptedObjectData = AES.encrypt(data=objectData, key=objectKey)
         preHashValue = bytearray(objectData).append(bytes(target))
         objectHash = hash(bytes(preHashValue)) # TODO make it actually append
-        encryptedObjectHash = aesEncrypt(data=objectHash, key=objectKey)
+        encryptedObjectHash = AES.encrypt(data=objectHash, key=objectKey)
         
         messageData = {"keyHash":keyHash, "dataHash":encryptedObjectHash, "data":encryptedObjectData, "objectName":target, "requestNum":reqNum}
         client.setRequestNumberData(reqNum, messageData) # Save the data to avoid recomputing for resends
