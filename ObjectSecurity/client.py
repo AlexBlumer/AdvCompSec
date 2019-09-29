@@ -186,21 +186,17 @@ def initiateConnection(server, ownKeyFile):
             if data != -1:
                 success, ownDhVal = handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash) # TODO timeout currently tries to resend next data, not prev
             if not success and server.getConnectionState() <= ClientState.DIFFIE_HELLMAN_SENT:
-                print ("Resending connect request") # DEBUG
                 sock.send(sendMsgBytes) # Probably a timeout, resend the request
                 resendCount += 1
             else:
-                print ("Initial connect response received") # DEBUG
                 resendCount = 0
         elif state == ClientState.DIFFIE_HELLMAN_SENT:
             if data != -1:
                 success = handleKeyAdvertisement(server, data)
             if not success and server.getConnectionState() <= ClientState.DIFFIE_HELLMAN_SENT:
-                print ("Resending diffie hellman") # DEBUG
                 success, _ = handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, ownDhVal)
                 resendCount += 1
             else:
-                print ("Initial key advertisement received") # DEBUG
                 resendCount = 0
         elif state == ClientState.KEYS_ADVERTISED:
             if data != -1:
@@ -253,12 +249,9 @@ def dataRequest(server, object, objectKeyHash):
             continue
         
         try:
-            print("data: {}".format(data)) # DEBUG
             msg = Message.fromBytes(data)
-            print("data response received".format()) # DEBUG
             handleDataResponse(server, msg)
         except: # not a valid data response, should probably be a late KeyAdvertisementAck or an objRequestAck
-            print("Message not a data response".format()) # DEBUG
             success, status, recvReqNum = handleObjectRequestAck(server, data)
             if success and recvReqNum == reqNum:
                 return False, DataExchangeStatus(status)
@@ -281,8 +274,6 @@ If called while in another state, it merely resends the response with the given 
 def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
     sock = server.getSocket()
     
-    print ("Attempting to parse connect response") # DEBUG
-    
     pubKeyHash = None
     serverDhVal = None
     dhParams = None
@@ -293,15 +284,12 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
         serverDhVal = msg.getDiffieHellmanValue()
         print(msg.data)
         if pubKeyHash == False or pubKeyHash == None or serverDhVal == False or serverDhVal == None: # Not a valid CONNECT_RESPONSE. Probably an encrypted message that start with the right number
-            print ("Bad connect response message") # DEBUG
             return (False, None)
     except: # Not a proper message, likely wrong level of encryption
         if data != -1: # not a timeout
-            print ("Not proper encryption for a connect response") # DEBUG
             return (False, None)
     
     if server.getConnectionState() == ClientState.HANDSHAKE_STARTED:
-        print ("Initial connect response message received") # DEBUG
         serverPubKey = serverKeyDict.get(pubKeyHash)
         if serverPubKey == None:
             print("Cannot find server public key. Exiting...")
@@ -337,11 +325,9 @@ If called while in another state, it merely resends the the key advertisement re
 def handleKeyAdvertisement(server, data):
     sock = server.getSocket()
     
-    print("Trying to read key ad") # DEBUG
     keyHashes = None
     try:
         unencryptedData = AES.decrypt(data=data, key=server.getSessionKey())
-        # print("data: {}".format(unencryptedData)) # DEBUG
         msg = Message.fromBytes(unencryptedData)
         keyHashes = msg.getObjectKeyHashes()
         if keyHashes == False or keyHashes == None:
@@ -437,17 +423,13 @@ def handleDataResponse(server, msg):
     data = msg.getObjectData()
     objectName = msg.getObjectName()
     
-    print("msg data: {}".format(msg.data)) # DEBUG
     if reqNum in {False, None} or keyHash in {False, None} or dataHash in {False, None} or data in {False, None} or objectName in {False, None}:
-        print("Missing value") # DEBUG
         return False
     
     if server.checkRequestNumberUsed(reqNum) == False:
-        print("unknown request number: {}".format(reqNum)) # DEBUG
         return False
     requestData = server.getRequestNumberData(reqNum)
     if requestData == None or objectName != requestData['name']:
-        print("Object name '{}' doesnt match with requested '{}'".format(objectName, requestData['name'])) # DEBUG
         return False
     key = objectKeyDict.get(keyHash)
     key = base64.b64decode(key)

@@ -135,7 +135,6 @@ def runServer(clientKeyFile, objectKeyFile, localKeyFile, loadFileLocation, addr
     pubKeyString = pubKeyString[(pubKeyString.find('\n') + 1):pubKeyString.rfind('\n')]
     pubKeyString = pubKeyString.replace('\n', '')
     pubKeyString = pubKeyString.replace('\r', '')
-    # print("pub key bytes: {}".format(bytes(pubKeyString, 'ascii'))) # DEBUG
     ownPubKeyHash = getHash(bytes(pubKeyString, 'ascii'))
 
     if not isinstance(localPort, int) or localPort < 0 or localPort > 65535:
@@ -219,30 +218,24 @@ def completeConnectionServer(client):
         success = False
         if state == ServerState.HANDSHAKE_STARTED:
             if data != -1:
-                print("Preparing initiall connect response") # DEBUG
                 success, params, pubDhVal, privDhVal = handleConnectRequest(client, data)
             if not success: # It wasn't a valid connection request, so ignore it
                 client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
-                print("Invalid connection response") # DEBUG
             else:
                 resendCount = 0
         elif state == ServerState.CONNECT_RESPONSE_SENT:
             if data != -1:
-                print("Preparing initiall DH response") # DEBUG
                 success = handleDiffieHellmanResponse(client, data, privDhVal)
             if not success and client.getConnectionState() <= ServerState.CONNECT_RESPONSE_SENT: # Not a DH-response and not a total failure
                 # Resend the connect response
                 success, _, _, _ = handleConnectRequest(client, data, params, pubDhVal)
                 resendCount += 1
-                print("Preparing secondary connect response") # DEBUG
             else:
                 resendCount = 0
         elif state == ServerState.KEYS_ADVERTISED:
             if data != -1:
-                print("Preparing initiall key advertisement response") # DEBUG
                 success = handleKeyAdvertisementServer(client, data)
             if not success and client.getConnectionState() <= ServerState.KEYS_ADVERTISED: # Not a DH-response and not a total failure
-                print("Preparing secondary DH response") # DEBUG
                 # Resend the key advertisement
                 success = handleDiffieHellmanResponse(client, data)
                 resendCount += 1
@@ -315,10 +308,8 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
         msg = Message.fromBytes(data)
         pubKeyHash = msg.getPublicKeyHash()
         if pubKeyHash == False or pubKeyHash == None: # Not a valid CONNECT_REQUEST. Probably an encrypted message that start with the right number
-            print ("No pub key hash") # DEBUG
             return False, None, None, None
     except: # Not a proper message, likely wrong level of encryption
-        print ("Bad connect request message") # DEBUG
         return False, None, None, None
     
     privDhVal = None
@@ -327,7 +318,6 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
         
         if clientPublicKey == None: # An unknown person
             client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
-            print ("can't find pub key from hash") # DEBUG
             return False, None, None, None
         else:
             clientPublicKey = RSA.pubKeyFromLine(clientPublicKey)
@@ -336,7 +326,6 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
             client.setPubKey(clientPublicKey)
             
             privDhVal, dhVal = DH.createDiffieHellmanValue()
-            print("Own pub dhVal: {}".format(dhVal)) # DEBUG
     
     # print("Key hash: {}".format(ownPubKeyHash))
     sendMsgData = {"key": ownPubKeyHash, "exchangeValue": dhVal}
@@ -372,11 +361,9 @@ def handleDiffieHellmanResponse(client, data, privDhVal=None):
         msg = Message.fromBytes(unencryptedData)
         dhVal = msg.getDiffieHellmanValue()
         if dhVal == False or dhVal == None: # Not a valid DIFFIE_HELLMAN_RESPONSE. Probably an encrypted message that start with the right number
-            print ("Bad DH response message") # DEBUG
             return False
     except: # Not a proper message, likely wrong level of encryption
         if data != -1:
-            print("Not a valid message") # DEBUG
             return False
     
     state = client.getConnectionState()
@@ -394,7 +381,6 @@ def handleDiffieHellmanResponse(client, data, privDhVal=None):
     sendMsg = Message(MessageType.KEY_ADVERTISEMENT, sendMsgData)
     sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     
-    # print(sendMsg.toBytes()) # DEBUG
     sock = client.getSocket()
     sock.send(sendMsgBytes)
     
@@ -483,25 +469,20 @@ Handles object requests received by the server and sends the data message. If th
 :param msg:         A Message object with type of OBJECT_REQUEST
 """
 def handleObjectRequest(client, msg): # TODO add an objReqAck
-    print("msg data: {}".format(msg.data)) # DEBUG
     reqNum = msg.getRequestNumber()
     target = msg.getTargetObject()
     keyHash = msg.getRequestedObjectKeyHash()
     sock = client.getSocket()
     
-    print("didn't faile in fields") # DEBUG
     
     # Make sure all values exist
     if reqNum == False or reqNum == None or target == False or target == None or keyHash == False or keyHash == None:
-        print("Missing fields") # DEBUG
         return
     
     if not isValidRequestNumber(reqNum) or not keyHash in objectKeyDict.keys(): # TODO create func and decide what makes a request number
-        print("Bad request number or key hash") # DEBUG
         print("reqNum: {} isvalid {}".format(reqNum, isValidRequestNumber(reqNum)))
         return
     elif not client.checkRequestNumberUsed(reqNum): # A new request
-        print("New request. Number {}".format(reqNum)) # DEBUG
         client.setRequestNumberState(reqNum, DataExchangeState.DATA_SENT)
         
         objectData = retrieveData(target, client.getLoadFileLocation())
