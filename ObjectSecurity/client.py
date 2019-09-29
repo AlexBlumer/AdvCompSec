@@ -282,7 +282,7 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
     
     if server.getConnectionState() == ClientState.HANDSHAKE_STARTED:
         print ("Initial connect response message received") # DEBUG
-        serverPubKey = serverKeys.get(pubKeyHash)
+        serverPubKey = serverKeyDict.get(pubKeyHash)
         if serverPubKey == None:
             print("Cannot find server public key. Exiting...")
             server.setConnectionState(ClientState.SHUTDOWN_COMPLETE)
@@ -293,13 +293,13 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
         server.setPubKey(serverPubKey)
         dhVal, privDhVal = DH.createDiffieHellmanValue()
         
-        sessionKey = DH.createDiffieHellmanKey(sharedVal=serverDhVal, privateVal=privDhVal)
+        sessionKey = DH.createDiffieHellmanKey(serverDhVal, privDhVal)
         server.setSessionKey(sessionKey)
     
     sendMsgData = {"exchangeValue":dhVal}
     sendMsg = Message(MessageType.DIFFIE_HELLMAN_RESPONSE, sendMsgData)
-    sendMsgBytes = RSA.encrypt(data=sendMsg.toBytes(), pubKey=server.getPubKey())
-    sendMsgBytes = RSA.encrypt(data=sendMsgBytes, privKey=ownPrivKey)
+    sendMsgBytes = RSA.encrypt(sendMsg.toBytes(), server.getPubKey())
+    sendMsgBytes = RSA.encrypt(sendMsgBytes, ownPrivKey)
     sock.send(sendMsgBytes)
     
 """

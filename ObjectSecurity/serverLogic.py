@@ -168,7 +168,7 @@ def completeConnectionServer(client):
     
     privDhVal = None
     params = None
-    sendVal = None
+    pubDhVal = None
     
     connected = True
     sock.settimeout(RESPONSE_TIMEOUT)
@@ -189,7 +189,7 @@ def completeConnectionServer(client):
         if state == ServerState.HANDSHAKE_STARTED:
             if data != -1:
                 print("Preparing initiall connect response") # DEBUG
-                success, params, sendVal, privDhVal = handleConnectRequest(client, data)
+                success, params, pubDhVal, privDhVal = handleConnectRequest(client, data)
             if not success: # It wasn't a valid connection request, so ignore it
                 client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
                 print("Invalid connection response") # DEBUG
@@ -201,7 +201,7 @@ def completeConnectionServer(client):
                 success = handleDiffieHellmanResponse(client, data, privDhVal)
             if not success and client.getConnectionState() <= ServerState.CONNECT_RESPONSE_SENT: # Not a DH-response and not a total failure
                 # Resend the connect response
-                success, _, _ = handleConnectRequest(client, data, params, sentVal)
+                success, _, _, _ = handleConnectRequest(client, data, params, pubDhVal)
                 resendCount += 1
                 print("Preparing secondary connect response") # DEBUG
             else:
@@ -219,6 +219,7 @@ def completeConnectionServer(client):
                 resendCount = 0
         
         if resendCount >= maxResendCount:
+            print("Max resends hit in connection, marking as shutdown")
             client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
 
 def dataExchangeLoop(client):
@@ -308,17 +309,12 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
             print("dh value obtained") # DEBUG
     
     # print("Key hash: {}".format(ownPubKeyHash))
-    sendMsgData = {"key": ownPubKeyHash, "exchangeParams": params, "exchangeValue": sentVal}
-    
+    sendMsgData = {"key": ownPubKeyHash, "exchangeValue": dhVal}
     sendMsg = Message(MessageType.CONNECT_RESPONSE, sendMsgData)
     clientPubKey = client.getPubKey()
-    sendBytes = rsaEncrypt(data=sendMsg.toBytes(), pubKey=clientPublicKey)
-        
-    ownKey, _ = RSA.generate_key()
-    sendMsgData = {"key": ownKey, "exchangeParams": params, "exchangeValue": dhVal}
-    
     sendMsg = Message(MessageType.CONNECT_RESPONSE, sendMsgData)
-    sendBytes = RSA.encrypt(data=sendMsg.toBytes(), pubKey=clientPublicKey)
+    print(clientPubKey)
+    sendBytes = RSA.encrypt(sendMsg.toBytes(), clientPubKey)
     
     sock = client.getSocket()
     sock.send(sendBytes)
