@@ -176,7 +176,7 @@ def initiateConnection(server, ownKeyFile):
     while server.getConnectionState() < ClientState.DATA_EXCHANGE and resendCount < maxResendCount:
         data = None
         try:
-            data = sock.recv(512)
+            data = sock.recv(1024)
         except socket.timeout:
             data = -1
         
@@ -242,7 +242,7 @@ def dataRequest(server, object, objectKeyHash):
     while server.getRequestNumberState(reqNum) < DataExchangeState.EXCHANGE_COMPLETE:
         data = None
         try:
-            data = sock.recv(512)
+            data = sock.recv(1024)
         except socket.timeout:
             sock.send(sendMsgBytes)
             resendCount += 1
@@ -476,7 +476,7 @@ def initiateShutdown(server):
     while server.getConnectionState() != ClientState.SHUTDOWN_COMPLETE and resendCount < maxResendCount:
         data = None
         try:
-            data = sock.recv(512)
+            data = sock.recv(1024)
         except socket.timeout:
             data = -1
         
@@ -507,6 +507,8 @@ def getAllowableKeys(fileName):
     with open(fileName, 'r') as f:
         line = f.readline()
         while line:
+            line = line.replace('\r', '')
+            line = line.replace('\n', '')
             keys.add(line)
             line = f.readline()
     return keys

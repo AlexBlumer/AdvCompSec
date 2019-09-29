@@ -552,6 +552,8 @@ def getAllowableKeys(fileName):
     with open(fileName, 'r') as f:
         line = f.readline()
         while line:
+            line = line.replace('\r', '')
+            line = line.replace('\n', '')
             keys.add(line)
             line = f.readline()
     return keys
@@ -572,7 +574,7 @@ def retrieveData(target, loadFileLocation):
 
 def main():
     usageStr = """
-    usage: python serverLogic.py OPTIONS
+    usage: python server.py OPTIONS
     
     Options:
     -h  <address> --  address to host the server on. can be IPv4 or a url
