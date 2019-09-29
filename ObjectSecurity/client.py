@@ -8,6 +8,7 @@ from Crypto.Hash import SHA256
 import base64
 from getopt import getopt
 import random
+import uuid
 
 RESPONSE_TIMEOUT = 0.25 # 250 ms
 # TODO finish helper functions
@@ -31,7 +32,7 @@ class DataExchangeState(IntEnum):
     EXCHANGE_COMPLETE = 3
 
 class ServerData:
-    def __init__(self, host=None, port=None, sock=None, pubKey=None, sessionKey=None, objectKeyHashes=[], connectionState=ClientState.UNINITIALZED):
+    def __init__(self, host=None, port=None, sock=None, pubKey=None, sessionKey=None, objectKeyHashes=[], connectionState=ClientState.UNINITIALZED, saveFileLocation=''):
         self.host = host
         self.port = port
         self.pubKey = pubKey
@@ -40,6 +41,8 @@ class ServerData:
         self.connectionState = connectionState
         self.sock = sock
         self.requestNumbers = {}
+        self.requestData = {}
+        self.saveFileLocation = saveFileLocation
         
     def getHost(self):
         return self.host
@@ -76,6 +79,9 @@ class ServerData:
     def setConnectionState(self, connectionState):
         self.connectionState = connectionState
     
+    def getSaveFileLocation(self):
+        return self.saveFileLocation
+    
     def getRequestNumberState(self, requestNumber):
         return self.requestNumbers.get(requestNumber)
     def checkRequestNumberUsed(self, requestNumber):
@@ -83,15 +89,15 @@ class ServerData:
     def setRequestNumberState(self, requestNumber, state):
         self.requestNumbers[requestNumber] = state
     
-    def getRequestNumberData(self):
-        return self.requestData
+    def getRequestNumberData(self, reqNum):
+        return self.requestData.get(reqNum)
     def setRequestNumberData(self, requestNumber, data):
         self.requestData[requestNumber] = data
     def clearRequestNumberData(self, requestNumber):
         self.pop(requestNumber)
 
 
-def runClient(serverKeyFile, objectKeyFile, localKeyFile, requestedObjects, host, port=7734):
+def runClient(serverKeyFile, objectKeyFile, localKeyFile, requestedObjects, saveFileLocation, host, port=7734):
     global serverKeyDict
     serverKeys = getAllowableKeys(serverKeyFile)
     serverKeyDict = {}
@@ -113,7 +119,7 @@ def runClient(serverKeyFile, objectKeyFile, localKeyFile, requestedObjects, host
     
     sock.connect( (host, port) )
     
-    server = ServerData(host=host, port=port, sock=sock, connectionState=ClientState.HANDSHAKE_STARTED)
+    server = ServerData(host=host, port=port, sock=sock, connectionState=ClientState.HANDSHAKE_STARTED, saveFileLocation=saveFileLocation)
     
     print("Initiating connection to host '{}' and port {}".format(host, port))
     success = initiateConnection(server, localKeyFile)
@@ -127,12 +133,12 @@ def runClient(serverKeyFile, objectKeyFile, localKeyFile, requestedObjects, host
                 print("Disconnected from server early")
                 break
             
-            objectKeyHash = selectObjectKey(server, objectKeys)
+            objectKeyHash = selectObjectKeyHash(server, objectKeyDict)
             success, status = dataRequest(server, object, objectKeyHash)
             if success:
                 print("Successfully retrieved object '{}'".format(object))
             else:
-                print("Failed to retreive object '{}' with status '{}'".format(object, status))
+                print("Failed to retreive object '{}' with status '{}'".format(object, status.name))
     
     initiateShutdown(server)
             
@@ -204,6 +210,14 @@ def initiateConnection(server, ownKeyFile):
                 resendCount += 1
             else:
                 resendCount = 0
+        
+        if resendCount >= maxResendCount:
+            print("Max resends hit in connection, marking as shutdown")
+            server.setConnectionState(ClientState.SHUTDOWN_COMPLETE)
+            return False
+    print("Current State: {}".format(server.getConnectionState().name))
+    
+    return server.getConnectionState() == ClientState.DATA_EXCHANGE
 """
 Makes a data request to the server for the given object, saving it to a file with the same name as the object
 
@@ -219,12 +233,12 @@ def dataRequest(server, object, objectKeyHash):
     sock = server.getSocket()
     
     server.setRequestNumberState(reqNum, DataExchangeState.REQUEST_SENT)
-    server.setRequestNumberData(reqNum, objectKeyHash)
+    server.setRequestNumberData(reqNum, {'hash':objectKeyHash, 'name':object})
     sessionKey = server.getSessionKey()
     
     sendMsgData = {"target":object, "keyHash":objectKeyHash, "requestNum":reqNum}
     sendMsg = Message(MessageType.OBJECT_REQUEST, sendMsgData)
-    sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     sock.send(sendMsgBytes)
     
     resendCount = 0
@@ -239,12 +253,18 @@ def dataRequest(server, object, objectKeyHash):
             continue
         
         try:
-            msg = Message.fromBytes()
+            print("data: {}".format(data)) # DEBUG
+            msg = Message.fromBytes(data)
+            print("data response received".format()) # DEBUG
             handleDataResponse(server, msg)
         except: # not a valid data response, should probably be a late KeyAdvertisementAck or an objRequestAck
+            print("Message not a data response".format()) # DEBUG
             success, status, recvReqNum = handleObjectRequestAck(server, data)
-            if success and status != DataExchangeStatus.SENDING_DATA and recvReqNum == reqNum:
-                return False, status
+            if success and recvReqNum == reqNum:
+                return False, DataExchangeStatus(status)
+            else:
+                raise
+    return True, None
 
 """
 Handles connection response messages, sending the DiffieHellman response. If called while in HANDSHAKE_STARTED, saves and updates the server's state and public key, and generates the DiffieHellman value.
@@ -282,25 +302,28 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
     
     if server.getConnectionState() == ClientState.HANDSHAKE_STARTED:
         print ("Initial connect response message received") # DEBUG
-        serverPubKey = serverKeys.get(pubKeyHash)
+        serverPubKey = serverKeyDict.get(pubKeyHash)
         if serverPubKey == None:
             print("Cannot find server public key. Exiting...")
             server.setConnectionState(ClientState.SHUTDOWN_COMPLETE)
-            return
+            return (False, None)
         
-        server.setConnectionState(ClientState.CONNECT_RESPONSE_RECEIVED)
+        server.setConnectionState(ClientState.DIFFIE_HELLMAN_SENT)
         serverPubKey = RSA.pubKeyFromLine(serverPubKey)
         server.setPubKey(serverPubKey)
-        dhVal, privDhVal = DH.createDiffieHellmanValue()
+        privDhVal, dhVal = DH.createDiffieHellmanValue()
         
-        sessionKey = DH.createDiffieHellmanKey(sharedVal=serverDhVal, privateVal=privDhVal)
+        sessionKey = DH.createDiffieHellmanKey(serverDhVal, privDhVal)
         server.setSessionKey(sessionKey)
     
     sendMsgData = {"exchangeValue":dhVal}
     sendMsg = Message(MessageType.DIFFIE_HELLMAN_RESPONSE, sendMsgData)
-    sendMsgBytes = RSA.encrypt(data=sendMsg.toBytes(), pubKey=server.getPubKey())
-    sendMsgBytes = RSA.encrypt(data=sendMsgBytes, privKey=ownPrivKey)
-    sock.send(sendMsgBytes)
+    sendMsgBytes = RSA.encrypt(sendMsg.toBytes(), server.getPubKey())
+    signature = RSA.sign(sendMsg.toBytes(), ownPrivKey)
+    finalSendBytes = bytearray(sendMsgBytes) + bytearray(signature)
+    sock.send(bytes(finalSendBytes))
+    
+    return True, dhVal
     
 """
 Handles key advertisement messages, sending its own key advertisement response. If called while in DIFFIE_HELLMAN_SENT, saves and updates the server's state and object keys.
@@ -314,14 +337,17 @@ If called while in another state, it merely resends the the key advertisement re
 def handleKeyAdvertisement(server, data):
     sock = server.getSocket()
     
+    print("Trying to read key ad") # DEBUG
     keyHashes = None
     try:
         unencryptedData = AES.decrypt(data=data, key=server.getSessionKey())
+        # print("data: {}".format(unencryptedData)) # DEBUG
         msg = Message.fromBytes(unencryptedData)
         keyHashes = msg.getObjectKeyHashes()
-        if keyHashes in {False, None}:
+        if keyHashes == False or keyHashes == None:
             return False
     except:
+        raise
         if data != -1: # Not a timeout
             return False
     
@@ -329,10 +355,10 @@ def handleKeyAdvertisement(server, data):
         server.setConnectionState(ClientState.KEYS_ADVERTISED)
         server.setObjectKeyHashes(keyHashes)
     
-    allowedKeys = getAllowedKeyHashes()
+    allowedKeys = list(objectKeyDict.keys())
     sendMsgData = {"keys":allowedKeys}
-    sendMsg = Message(MessageType.KEY_ADVERTISEMENT)
-    sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
+    sendMsg = Message(MessageType.KEY_ADVERTISEMENT, sendMsgData)
+    sendMsgBytes = AES.encrypt(sendMsg.toBytes(), server.getSessionKey())
     sock.send(sendMsgBytes)
     return True
 
@@ -368,13 +394,12 @@ Handles object request acks. If the status contains a failure, marks the reqNum 
             reqNum - The request number given by the ack
 """
 def handleObjectRequestAck(server, data):
-    sessionKey = server.getSessionKey()
-    aesDecrypt(data=data, key=sessionKey)
     
     status = None
     reqNum = None
     try:
-        msg = Message.fromBytes()
+        unencryptedData = AES.decrypt(data=data, key=server.getSessionKey())
+        msg = Message.fromBytes(unencryptedData)
         status = msg.getStatus()
         reqNum = msg.getRequestNumber()
         if status in {False, None} or reqNum in {False, None}:
@@ -385,14 +410,14 @@ def handleObjectRequestAck(server, data):
     if not server.checkRequestNumberUsed(reqNum):
         return (False, None, None)
     
-    if server.getConnectionState(reqNum) < DataExchangeState.EXCHANGE_COMPLETE:
-        server.setConnectionState(reqNum, DataExchangeState.EXCHANGE_COMPLETE)
+    if server.getRequestNumberState(reqNum) < DataExchangeState.EXCHANGE_COMPLETE:
+        server.setRequestNumberState(reqNum, DataExchangeState.EXCHANGE_COMPLETE)
     
     sock = server.getSocket()
     sessionKey = server.getSessionKey()
     sendMsgData = {"requestNum":reqNum}
     sendMsg = Message(MessageType.DATA_ACK, sendMsgData)
-    sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     sock.send(sendMsgBytes)
     
     return (True, status, reqNum)
@@ -407,38 +432,45 @@ Handles data responses. Always sends a data ack. If the request number is unfini
 """
 def handleDataResponse(server, msg):
     reqNum = msg.getRequestNumber()
-    keyHash = msg.getKeyHash()
+    keyHash = msg.getObjectKeyHash()
     dataHash = msg.getObjectDataHash()
     data = msg.getObjectData()
     objectName = msg.getObjectName()
     
+    print("msg data: {}".format(msg.data)) # DEBUG
     if reqNum in {False, None} or keyHash in {False, None} or dataHash in {False, None} or data in {False, None} or objectName in {False, None}:
+        print("Missing value") # DEBUG
         return False
     
     if server.checkRequestNumberUsed(reqNum) == False:
+        print("unknown request number: {}".format(reqNum)) # DEBUG
         return False
-    if objectName != server.getRequestNumberData(reqNum):
+    requestData = server.getRequestNumberData(reqNum)
+    if requestData == None or objectName != requestData['name']:
+        print("Object name '{}' doesnt match with requested '{}'".format(objectName, requestData['name'])) # DEBUG
         return False
-    key = objectKeys.get(keyHash)
+    key = objectKeyDict.get(keyHash)
+    key = base64.b64decode(key)
     if key == None:
         return False
     
-    unencryptedDataHash = aesDecrypt(data=dataHash, key=key)
-    unencryptedData = aesDecrypt(data=data, key=key)
+    unencryptedDataHash = AES.decrypt(data=dataHash, key=key)
+    unencryptedData = AES.decrypt(data=data, key=key)
     
-    preHashValue = bytearray(unencryptedData).append(bytes(objectName))
-    if hash( bytes(preHashValue) ) != unencryptedDataHash: # Not the correct object
+    preHashValue = bytearray(unencryptedData) + bytearray(objectName, "ascii")
+    if getHash( bytes(preHashValue) ) != unencryptedDataHash: # Not the correct object
         return False
     
-    if server.getRequestNumberState() == DataExchangeState.REQUEST_SENT:
-        saveObject(data=unencryptedData, name=objectName)
+    if server.getRequestNumberState(reqNum) == DataExchangeState.REQUEST_SENT:
+        saveObject(unencryptedData, objectName, server.getSaveFileLocation())
+        server.setRequestNumberState(reqNum, DataExchangeState.EXCHANGE_COMPLETE)
     
     sock = server.getSocket()
     sessionKey = server.getSessionKey()
     
     sendMsgData = {"requestNum":reqNum}
     sendMsg = Message(MessageType.DATA_ACK, sendMsgData)
-    sendMsgBytes = aesEncrypt(data=sendMsg.toBytes(), key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     sock.send(sendMsgBytes)
     
     return True
@@ -448,18 +480,18 @@ def initiateShutdown(server):
     server.setConnectionState(ClientState.SHUTDOWN_SENT)
     
     sock = server.getSocket()
-    sock.setTimeout(RESPONSE_TIMEOUT)
+    sock.settimeout(RESPONSE_TIMEOUT)
     
     maxResendCount = 10
     resendCount = 0
     
     sessionKey = server.getSessionKey()
     sendMsg = Message(MessageType.SHUTDOWN_REQUEST)
-    sendMsgBytes = AES.encrypt(data=sendMsg, key=sessionKey)
+    sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     
     sock.send(sendMsgBytes)
     
-    while server.getConnectionState() != ServerState.SHUTDOWN_COMPLETE and resendCount < maxResendCount:
+    while server.getConnectionState() != ClientState.SHUTDOWN_COMPLETE and resendCount < maxResendCount:
         data = None
         try:
             data = sock.recv(512)
@@ -474,7 +506,7 @@ def initiateShutdown(server):
             if msg.type == MessageType.SHUTDOWN_CLOSEE_ACK:
                 server.setConnectionState(ClientState.SHUTDOWN_COMPLETE)
                 sendMsg = Message(MessageType.SHUTDOWN_CLOSER_ACK)
-                sendMsgBytes = AES.encrypt(data=sendMsg, key=sessionKey)
+                sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
                 sock.send(sendMsgBytes)
             else:
                 sock.send(sendMsgBytes)
@@ -497,6 +529,22 @@ def getAllowableKeys(fileName):
             line = f.readline()
     return keys
 
+def selectObjectKeyHash(server, objectKeys):
+    serverKeys = server.getObjectKeyHashes()
+    for h in serverKeys:
+        key = objectKeys[h]
+        if key != None:
+            return h
+    return None
+
+def generateRequestNumber():
+    return uuid.uuid1().int
+
+def saveObject(data, name, saveLoc):
+    f = open(saveLoc + name, "wb+")
+    f.write(data)
+    f.close()
+
 def main():
     """
     usage: python client.py OPTIONS FILE...
@@ -507,6 +555,7 @@ def main():
     -s <serverKeyFile> -- a file containing the public keys for all known servers
     -o <objectKeyFile> -- a file containing the keys for decrypting objects
     -l <localKeyFile> -- a file containing the public and private keys for this client
+    -f <save file location> -- the path to prepend to all saved files. default is nothing
     
     The program will request all files from the target server (specifiedin options), saving them locally to files of the same name.
     If no files are specified then a connection attempt will be made, then shutdown immediately
@@ -517,7 +566,8 @@ def main():
     serverKeyFile = None
     objectKeyFile = None
     localKeyFile = None
-    optlist, remainingArgs = getopt(sys.argv[1:], 'h:p:s:o:l:')
+    saveFileLocation = ""
+    optlist, remainingArgs = getopt(sys.argv[1:], 'h:p:s:o:l:f:')
     for optSet in optlist:
         opt = optSet[0]
         if opt == '-h':
@@ -530,7 +580,10 @@ def main():
             objectKeyFile = optSet[1]
         if opt == '-l':
             localKeyFile = optSet[1]
+        if opt == '-f':
+            saveFileLocation = optSet[1]
     targetFiles = remainingArgs
+    print("remaingingArgs: {}".format(targetFiles))
     
     optionsValid = True
     if serverKeyFile == None:
@@ -549,7 +602,7 @@ def main():
     if not optionsValid:
         return
     
-    runClient(serverKeyFile, objectKeyFile, localKeyFile, targetFiles, host, port)
+    runClient(serverKeyFile, objectKeyFile, localKeyFile, targetFiles, saveFileLocation, host, port)
 
 if __name__ == "__main__":
     main()
