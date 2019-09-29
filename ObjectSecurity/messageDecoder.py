@@ -30,13 +30,13 @@ messageTypeSet = set(item for item in MessageType)
 
 class Message:
 
-    def __init__(self, type, data = None):
+    def __init__(self, type, data = {}):
         if not type in messageTypeSet or type == MessageType.UNINITIALIZED:
             raise Exception("Invalid type for created Message")
-        if data == None and (type != MessageType.KEY_ADVERTISEMENT_ACK and type != MessageType.SHUTDOWN_CLOSER_ACK and type != MessageType.SHUTDOWN_CLOSEE_ACK):
-            raise Exception("No data provided for Message type {}. Only KEY_ADVERTISEMENT_ACK, SHUTDOWN_CLOSEE_ACK and SHUTDOWN_CLOSER_ACK can have no data.")
-        if not isinstance(data, dict) and (type != MessageType.KEY_ADVERTISEMENT_ACK and type != MessageType.SHUTDOWN_CLOSER_ACK and type != MessageType.SHUTDOWN_CLOSEE_ACK):
-            raise Exception("Data must be provided as a dictionary for Message type {}. Only KEY_ADVERTISEMENT_ACK, SHUTDOWN_CLOSEE_ACK and SHUTDOWN_CLOSER_ACK can have no data.")
+        if data == {} and (type != MessageType.KEY_ADVERTISEMENT_ACK and type != MessageType.SHUTDOWN_REQUEST and type != MessageType.SHUTDOWN_CLOSER_ACK and type != MessageType.SHUTDOWN_CLOSEE_ACK):
+            raise Exception("No data provided for Message type {}. Only KEY_ADVERTISEMENT_ACK, SHUTDOWN_REQUEST, SHUTDOWN_CLOSEE_ACK and SHUTDOWN_CLOSER_ACK can have no data.")
+        if not isinstance(data, dict) and (type != MessageType.KEY_ADVERTISEMENT_ACK and type != MessageType.SHUTDOWN_REQUEST and type != MessageType.SHUTDOWN_CLOSER_ACK and type != MessageType.SHUTDOWN_CLOSEE_ACK):
+            raise Exception("Data must be provided as a dictionary for Message type {}. Only KEY_ADVERTISEMENT_ACK, SHUTDOWN_REQUEST, SHUTDOWN_CLOSEE_ACK and SHUTDOWN_CLOSER_ACK can have no data.")
         
         self.type = type
         self.data = data
@@ -121,8 +121,8 @@ class Message:
     # Returns the request number if it is there, None if it is not there, or False if it is the wrong message type
     # Only OBJECT_REQUEST, OBJECT_REQUEST_ACK, DATA_MESSAGE, and DATA_ACK should have this value
     def getRequestNumber(self):
-        if self.type != MessageType.OBJECT_REQUEST or self.type != MessageType.OBJECT_REQUEST_ACK or \
-            self.type != MessageType.DATA_MESSAGE or self.type != MessageType.DATA_ACK:
+        if self.type != MessageType.OBJECT_REQUEST and self.type != MessageType.OBJECT_REQUEST_ACK and \
+            self.type != MessageType.DATA_MESSAGE and self.type != MessageType.DATA_ACK:
             return False
         
         return self.data.get("requestNum")

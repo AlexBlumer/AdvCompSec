@@ -1,6 +1,7 @@
 import Crypto
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
+from Crypto.Signature import PKCS1_PSS
 from Crypto import Random
 from Crypto.Hash import SHA256
 import ast
@@ -22,9 +23,10 @@ class ObjSRSA:
         print('encrypted message:' + str(encrypted)) #ciphertext
         return encrypted
     def sign(data, key):
-        cipher = PKCS1_OAEP.new(key)
-        encrypted = cipher.encrypt(data)
-        
+        signer = PKCS1_PSS.new(key)
+        hash = ObjSRSA.getHash(data)
+        signature = signer.sign(hash)
+        return signature
 
     def decrypt(data, key):
         cipher = PKCS1_OAEP.new(key)
@@ -32,8 +34,16 @@ class ObjSRSA:
         # decrypted = key.decrypt(ast.literal_eval(str(data)))
         print('decrypted' + str(decrypted))
         return decrypted
-    def checkSignature():
-        
+    def separateSignature(message, key):
+        border = key.size_in_bytes()
+        data = message[:border]
+        signature = message[border:]
+        return data, signature
+    def checkSignature(unencryptedData, key, signature):
+        checker = PKCS1_PSS.new(key)
+        hash = ObjSRSA.getHash(unencryptedData)
+        return checker.verify(hash, signature)
+    
     def importServerKey():
         with open('public.pem','rb') as f:
             return RSA.importKey(f.read())
@@ -50,10 +60,11 @@ class ObjSRSA:
         pemStyleString = "-----BEGIN PUBLIC KEY-----\n" + line[0:64] + '\n' + line[64:128] + '\n' + line[128:192] + '\n' + line[192:] + "\n-----END PUBLIC KEY-----"
         return RSA.importKey(pemStyleString)
     
+    @staticmethod
     def getHash(bytes):
         hash_object = SHA256.new()
         hash_object.update(base64.b64encode(bytes))
-        return hash_object.digest()
+        return hash_object
 
 def main():
     import sys
