@@ -4,9 +4,15 @@ from enum import IntEnum
 from aes import ObjSAES as AES
 from diffie_hellman import ObjSDH as DH
 from rsa import ObjSRSA as RSA
+from Crypto.Hash import SHA256
+import base64
+from getopt import getopt
 # TODO finish helper functions
 # TODO figure out actual max length of packets for receiving
 # TODO resends
+# TODO actually fail if no responses in completeConnectionServer
+
+RESPONSE_TIMEOUT = 0.25 # 250 ms
 
 class ClientState(IntEnum):
     UNINITIALZED = 0
@@ -96,19 +102,44 @@ class ClientData:
 
 
 # split into new thread or otherwise do async?
-def runServer(clientKeyFile, objectKeyFile, address='', port=7734): # '' indicates bind to all IP addresses
-    global clientKeys
-    clientKeys = RSA.getKeys(clientKeyFile) #RSA keys
-    global objectKeys
-    objectKeys = getKeys(objectKeyFile) #AES keys
+def runServer(clientKeyFile, objectKeyFile, localKeyFile, address='', port=7734): # '' indicates bind to all IP addresses
+    global clientKeyDict
+    clientKeys = getAllowableKeys(clientKeyFile)
+    clientKeyDict = {}
+    for key in clientKeys:
+        print(bytes(key,'utf-8'))
+        keyHash = getHash(bytes(key,'utf-8'))
+        clientKeyDict[keyHash] = key
+    global objectKeyDict
+    objectKeys = getAllowableKeys(objectKeyFile)
+    objectKeyDict = {}
+    for key in objectKeys:
+        keyHash = getHash(bytes(key,'utf-8'))
+        objectKeyDict[keyHash] = key
+        
+    global ownPrivKey
+    global ownPubKey
+    global ownPubKeyHash
+    
+    ownPrivKey, ownPubKey = RSA.getKeys(keyFile = localKeyFile)
+    pubKeyString = ownPubKey.exportKey('PEM').decode("utf-8")
+    pubKeyString = pubKeyString[(pubKeyString.find('\n') + 1):pubKeyString.rfind('\n')]
+    pubKeyString = pubKeyString.replace('\n', '')
+    pubKeyString = pubKeyString.replace('\r', '')
+    # print("pub key bytes: {}".format(bytes(pubKeyString, 'ascii'))) # DEBUG
+    ownPubKeyHash = getHash(bytes(pubKeyString, 'ascii'))
 
     if not isinstance(port, int) or port < 0 or port > 65535:
         raise Exception("Invalid port. Should be an integer between 0 and 65535, inclusive.")
-    sock = socket.socket(type=SOCK_DGRAM)
+    sock = socket.socket(type=socket.SOCK_DGRAM)
     sock.bind( (address, port) ) # '' indicates bind to all IP addresses
     
     while True:
-        _, recvAddress = sock.recvfrom(512, MSG_NOERROR | MSG_PEEK) # Don't read the message, just get the address
+        sock.settimeout(0.5)
+        try:
+            _, recvAddress = sock.recvfrom(1024, socket.MSG_PEEK) # Don't read the message, just get the address
+        except socket.timeout:
+            continue # TODO check for an exit request? otherwise need ^C to quit
         
         connSock = sock.dup()
         connSock.connect(recvAddress)
@@ -124,6 +155,7 @@ def runServer(clientKeyFile, objectKeyFile, address='', port=7734): # '' indicat
         if client.getConnectionState() == ServerState.DATA_EXCHANGE:
             print("Connection from IP '{}' and port {} successful".format(host, port))
         else:
+            print("Connection attempt from IP '{}' and port {} failed".format(host, port))
             continue
         
         dataExchangeLoop(client)
@@ -139,40 +171,68 @@ def completeConnectionServer(client):
     sendVal = None
     
     connected = True
-    sock.setTimeout(60)
+    sock.settimeout(RESPONSE_TIMEOUT)
+    resendCount = 0
+    maxResendCount = 10
     # Split or otherwise async?
-    while client.getConnectionState() < ServerState.DATA_EXCHANGE: # TODO give max timeouts before assuming connection dead
-        # data, _ancData, msgFlags, address= connSock.recvmsg(512)
-        # data = connSock.recv(512)
-        data = sock.recv(512, MSG_NOERROR)
+    while client.getConnectionState() < ServerState.DATA_EXCHANGE and resendCount < maxResendCount:
+        # data, _ancData, msgFlags, address= connSock.recvmsg(1024)
+        # data = connSock.recv(1024)
+        try:
+            data = sock.recv(1024)
+        except socket.timeout:
+            data = -1
         
         state = client.getConnectionState()
         
-        if data == -1:
-            shutdownConnection(connSock)
-        
+        success = False
         if state == ServerState.HANDSHAKE_STARTED:
-            success, params, sendVal, privDhVal = handleConnectRequest(client, data)
+            if data != -1:
+                print("Preparing initiall connect response") # DEBUG
+                success, params, sendVal, privDhVal = handleConnectRequest(client, data)
+            if not success: # It wasn't a valid connection request, so ignore it
+                client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
+                print("Invalid connection response") # DEBUG
+            else:
+                resendCount = 0
         elif state == ServerState.CONNECT_RESPONSE_SENT:
-            success = handleDiffieHellmanResponse(client, data, privDhVal)
+            if data != -1:
+                print("Preparing initiall DH response") # DEBUG
+                success = handleDiffieHellmanResponse(client, data, privDhVal)
             if not success and client.getConnectionState() <= ServerState.CONNECT_RESPONSE_SENT: # Not a DH-response and not a total failure
                 # Resend the connect response
                 success, _, _ = handleConnectRequest(client, data, params, sentVal)
+                resendCount += 1
+                print("Preparing secondary connect response") # DEBUG
+            else:
+                resendCount = 0
         elif state == ServerState.KEYS_ADVERTISED:
-            success = handleKeyAdvertisementServer(client, data)
+            if data != -1:
+                print("Preparing initiall key advertisement response") # DEBUG
+                success = handleKeyAdvertisementServer(client, data)
             if not success and client.getConnectionState() <= ServerState.KEYS_ADVERTISED: # Not a DH-response and not a total failure
+                print("Preparing secondary DH response") # DEBUG
                 # Resend the key advertisement
                 success = handleDiffieHellmanResponse(client, data)
+                resendCount += 1
+            else:
+                resendCount = 0
+        
+        if resendCount >= maxResendCount:
+            client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
 
 def dataExchangeLoop(client):
     sock = client.getSocket()
     state = DataExchangeState.WAITING_FOR_REQUEST
     sessionKey = client.getSessionKey()
     
-    sock.setTimeout(messageTimeout)
+    sock.settimeout(messageTimeout)
     
     while client.getConnectionState() == ServerState.DATA_EXCHANGE and """curtime""" < lastMessageTime + connectionTimeout:
-        data = sock.recv(512, MSG_NOERROR)
+        try:
+            data = sock.recv(1024)
+        except socket.timeout:
+            dat == -1
         
         if data == -1:
             continue
@@ -223,23 +283,36 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
         msg = Message.fromBytes(data)
         pubKeyHash = msg.getPublicKeyHash()
         if pubKeyHash == False or pubKeyHash == None: # Not a valid CONNECT_REQUEST. Probably an encrypted message that start with the right number
+            print ("No pub key hash") # DEBUG
             return False, None, None, None
     except: # Not a proper message, likely wrong level of encryption
+        print ("Bad connect request message") # DEBUG
         return False, None, None, None
     
     privDhVal = None
-    if state == ServerState.HANDSHAKE_STARTED: # Need to save data from CONNECT_REQUEST
-        clientPublicKey = clientKeys.get(pubKeyHash)
+    if client.getConnectionState() == ServerState.HANDSHAKE_STARTED: # Need to save data from CONNECT_REQUEST
+        clientPublicKey = clientKeyDict.get(pubKeyHash)
         
         if clientPublicKey == None: # An unknown person
             client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
+            print ("can't find pub key from hash") # DEBUG
             return False, None, None, None
         else:
+            clientPublicKey = RSA.pubKeyFromLine(clientPublicKey)
+            
             client.setConnectionState(ServerState.CONNECT_RESPONSE_SENT)
             client.setPubKey(clientPublicKey)
             
-            dhParams = getDiffieHellmanParams()
+            print("creating DH values") # DEBUG
             dhVal, privDhVal = DH.createDiffieHellmanValue()
+            print("dh value obtained") # DEBUG
+    
+    # print("Key hash: {}".format(ownPubKeyHash))
+    sendMsgData = {"key": ownPubKeyHash, "exchangeParams": params, "exchangeValue": sentVal}
+    
+    sendMsg = Message(MessageType.CONNECT_RESPONSE, sendMsgData)
+    clientPubKey = client.getPubKey()
+    sendBytes = rsaEncrypt(data=sendMsg.toBytes(), pubKey=clientPublicKey)
         
     ownKey, _ = RSA.generate_key()
     sendMsgData = {"key": ownKey, "exchangeParams": params, "exchangeValue": dhVal}
@@ -248,7 +321,7 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
     sendBytes = RSA.encrypt(data=sendMsg.toBytes(), pubKey=clientPublicKey)
     
     sock = client.getSocket()
-    sock.send(sendBytes) # TODO check for success?
+    sock.send(sendBytes)
     
     return True, dhParams, dhVal, privDhVal
 
@@ -271,8 +344,10 @@ def handleDiffieHellmanResponse(clientData, data, privDhVal=None):
         msg = Message.fromBytes(unencryptedData)
         dhVal = msg.getDiffieHellmanValue()
         if dhVal == False or dhVal == None: # Not a valid DIFFIE_HELLMAN_RESPONSE. Probably an encrypted message that start with the right number
+            print ("Bad connect request message") # DEBUG
             return False
     except: # Not a proper message, likely wrong level of encryption
+        
         return False
     
     state = clientData.getConnectionState()
@@ -337,7 +412,7 @@ def handleShutdown(client):
     client.setConnectionState(ServerState.SHUTDOWN_SENT)
 
     sock = client.getSocket()
-    sock.setTimeout(responseTimeout)
+    sock.settimeout(responseTimeout)
     
     maxResendCount = 10
     resendCount = 0
@@ -349,7 +424,7 @@ def handleShutdown(client):
     sock.send(sendMsgBytes)
     
     while client.getConnectionState() != ServerState.SHUTDOWN_COMPLETE and resendCount < maxResendCount:
-        data = sock.recv(512)
+        data = sock.recv(1024)
         
         if data == -1:
             sock.send(sendMsgBytes)
@@ -391,14 +466,14 @@ def handleObjectRequest(client, msg): # TODO add an objReqAck
         # Send an object request ack if either fails
         if objectData == None: # TODO or whatever fail value is for obtainData
             sessionKey = client.getSessionKey()
-            sendMsgData = {status:DataExchangeStatus.OBJ_NOT_FOUND, requestNum:reqNum}
+            sendMsgData = {"status":DataExchangeStatus.OBJ_NOT_FOUND, "requestNum":reqNum}
             sendMsg = Message(MessageType.OBJECT_REQUEST_ACK, sendMsgData)
             sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
             sock.send(sendMsgBytes)
             return
         elif objectKey == None:
             sessionKey = client.getSessionKey()
-            sendMsgData = {status:DataExchangeStatus.UNKNOWN_KEY, requestNum:reqNum}
+            sendMsgData = {"status":DataExchangeStatus.UNKNOWN_KEY, "requestNum":reqNum}
             sendMsg = Message(MessageType.OBJECT_REQUEST_ACK, sendMsgData)
             sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
             sock.send(sendMsgBytes)
@@ -409,7 +484,7 @@ def handleObjectRequest(client, msg): # TODO add an objReqAck
         objectHash = hash(bytes(preHashValue)) # TODO make it actually append
         encryptedObjectHash = AES.encrypt(data=objectHash, key=objectKey)
         
-        messageData = {keyHash:keyHash, dataHash:encryptedObjectHash, data:encryptedObjectData, objectName:target, requestNum:reqNum}
+        messageData = {"keyHash":keyHash, "dataHash":encryptedObjectHash, "data":encryptedObjectData, "objectName":target, "requestNum":reqNum}
         client.setRequestNumberData(reqNum, messageData) # Save the data to avoid recomputing for resends
         
         sendMsg = Message(MessageType.DATA_MESSAGE, messageData)
@@ -439,5 +514,73 @@ def handleDataAck(client, msg):
     
     client.clearRequestNumberData(reqNum)
     client.setRequestNumberState(DataExchangeState.EXCHANGE_COMPLETE)
+
+def getHash(bytes):
+    hash_object = SHA256.new()
+    hash_object.update(base64.b64encode(bytes))
+    return hash_object.digest()
+
+def getAllowableKeys(fileName):
+    keys = set()
+    with open(fileName, 'r') as f:
+        line = f.readline()
+        while line:
+            keys.add(line)
+            line = f.readline()
+    return keys
+
+def main():
+    """
+    usage: python serverLogic.py OPTIONS FILE...
     
+    Options:
+    -h  <address> --  address to host the server on. can be IPv4 or a url
+    -p <port>  --  port to host the server on. Optional, defaults to 7734
+    -c <clientKeyFile> -- a file containing the public keys and their hashes for all authorized clients
+    -o <objectKeyFile> -- a file containing the keys and their hashes for decrypting objects
     
+    The program will request all files from the target server (specifiedin options), saving them locally to files of the same name.
+    If no files are specified then a connection attempt will be made, then shutdown immediately
+    """
+    import sys
+    host = None
+    port = 7734
+    clientKeyFile = None
+    objectKeyFile = None
+    files = set()
+    optlist, remainingArgs = getopt(sys.argv[1:], 'h:p:c:o:l:')
+    for optSet in optlist:
+        opt = optSet[0]
+        if opt == '-h':
+            host = optSet[1]
+        if opt == '-p':
+            port = int(optSet[1])
+        if opt == '-c':
+            clientKeyFile = optSet[1]
+        if opt == '-o':
+            objectKeyFile = optSet[1]
+        if opt == '-l':
+            localKeyFile = optSet[1]
+    files = remainingArgs
+    
+    optionsValid = True
+    if clientKeyFile == None:
+        optionsValid = False
+        print("Client key file must be specified. Use '-s <clientKeyFile>'")
+    if host == None:
+        optionsValid = False
+        print("Target host must be specified. Use '-h <host>'")
+    if objectKeyFile == None:
+        optionsValid = False
+        print("Object key file must be specified. Use '-o <objectKeyFile>'")
+    if localKeyFile == None:
+        optionsValid = False
+        print("local key file must be specified. Use '-l <localKeyFile>'")
+    
+    if not optionsValid:
+        return
+    
+    runServer(clientKeyFile, objectKeyFile, localKeyFile, host, port)
+
+if __name__ == "__main__":
+    main()

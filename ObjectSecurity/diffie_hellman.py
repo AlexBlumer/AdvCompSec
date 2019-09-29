@@ -2,20 +2,24 @@ from Crypto import Random
 
 class ObjSDH:
 
-    def __init__(self):
-        self.g = 5029469
-        self.n = 18
 
-    def createDiffieHellmanKey(self, privateVal, sharedVal):
-        return self.power(sharedVal, privateVal, self.n)
     
-    def createDiffieHellmanValue(self):
-        dhPrivValue = Random.new().read
-        dhValue = self.power(self.g, value, self.n)
-        return(dhValue, dhPrivValue)
+    g = 5029469
+    n = 18
+    @classmethod
+    def createDiffieHellmanKey(cls, receivedValue, secretValue):
+        return cls.power(receivedValue,secretValue,cls.n)
+
+    @classmethod
+    def createDiffieHellmanValue(cls):
+        dhPrivValue = int.from_bytes(Random.new().read(3), 'little')
+        dhValue = cls.power(cls.g, dhPrivValue, cls.n)
+        return(dhPrivValue,dhValue)
 
     # Iterative Function to calculate 
-    # (x^y)%p in O(log y)  
+    # (x^y)%p in O(log y)
+    
+    @classmethod
     def power(x, y, p) : 
         res = 1     
         x = x % p  
