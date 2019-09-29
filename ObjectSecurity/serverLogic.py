@@ -590,8 +590,8 @@ def retrieveData(target, loadFileLocation):
         return None
 
 def main():
-    """
-    usage: python serverLogic.py OPTIONS FILE...
+    usageStr = """
+    usage: python serverLogic.py OPTIONS
     
     Options:
     -h  <address> --  address to host the server on. can be IPv4 or a url
@@ -607,6 +607,7 @@ def main():
     host = None
     port = 7734
     clientKeyFile = None
+    localKeyFile = None
     objectKeyFile = None
     loadFileLocation = ""
     files = set()
@@ -642,6 +643,7 @@ def main():
         print("local key file must be specified. Use '-l <localKeyFile>'")
     
     if not optionsValid:
+        print(usageStr)
         return
     
     runServer(clientKeyFile, objectKeyFile, localKeyFile, loadFileLocation, host, port)

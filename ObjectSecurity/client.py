@@ -546,7 +546,7 @@ def saveObject(data, name, saveLoc):
     f.close()
 
 def main():
-    """
+    usageStr = """
     usage: python client.py OPTIONS FILE...
     
     Options:
@@ -600,6 +600,7 @@ def main():
         print("local key file must be specified. Use '-l <localKeyFile>'")
     
     if not optionsValid:
+        print(usageStr)
         return
     
     runClient(serverKeyFile, objectKeyFile, localKeyFile, targetFiles, saveFileLocation, host, port)
