@@ -11,9 +11,7 @@ import random
 import uuid
 
 RESPONSE_TIMEOUT = 0.25 # 250 ms
-# TODO finish helper functions
-# TODO figure out actual max length of packets for receiving
-# TODO resends
+# TODO add cmdline options for intermediary
 
 class ClientState(IntEnum):
     UNINITIALZED = 0
@@ -32,7 +30,7 @@ class DataExchangeState(IntEnum):
     EXCHANGE_COMPLETE = 3
 
 class ServerData:
-    def __init__(self, host=None, port=None, sock=None, pubKey=None, sessionKey=None, objectKeyHashes=[], connectionState=ClientState.UNINITIALZED, saveFileLocation=''):
+    def __init__(self, host=None, port=None, sock=None, pubKey=None, sessionKey=None, objectKeyHashes=[], intermediaryHost=None, intermediaryPort=None, connectionState=ClientState.UNINITIALZED, saveFileLocation=''):
         self.host = host
         self.port = port
         self.pubKey = pubKey
@@ -43,6 +41,8 @@ class ServerData:
         self.requestNumbers = {}
         self.requestData = {}
         self.saveFileLocation = saveFileLocation
+        self.intermediaryHost = intermediaryHost
+        self.intermediaryPort = intermediaryPort
         
     def getHost(self):
         return self.host
@@ -78,6 +78,19 @@ class ServerData:
         return self.connectionState
     def setConnectionState(self, connectionState):
         self.connectionState = connectionState
+        
+    def getIntermediaryHost(self):
+        return self.intermediaryHost
+    def setIntermediaryHost(self, connectionState):
+        self.intermediaryHost = intermediaryHost
+    
+    def getIntermediaryHost(self):
+        return self.intermediaryHost
+    def setIntermediaryHost(self, connectionState):
+        self.intermediaryHost = intermediaryHost
+    
+    def isUsingIntermediary(self):
+        return self.intermediaryHost != None and self.intermediaryPort != None
     
     def getSaveFileLocation(self):
         return self.saveFileLocation
@@ -97,7 +110,7 @@ class ServerData:
         self.pop(requestNumber)
 
 
-def runClient(serverKeyFile, objectKeyFile, localKeyFile, requestedObjects, saveFileLocation, host, port=7734):
+def runClient(serverKeyFile, objectKeyFile, localKeyFile, requestedObjects, saveFileLocation, host, port=7734, intermediaryPort=None, intermediaryHost=None):
     global serverKeyDict
     serverKeys = getAllowableKeys(serverKeyFile)
     serverKeyDict = {}
@@ -117,9 +130,18 @@ def runClient(serverKeyFile, objectKeyFile, localKeyFile, requestedObjects, save
     localPort = random.randint(1024, 65535)
     sock.bind( ('', localPort) ) # bind to any open addresss
     
-    sock.connect( (host, port) )
-    
+    if intermediaryPort == None or intermediaryHost == None:
+        sock.connect( (intermediaryHost, intermediaryPort) )
+        host = socket.gethostbyname(host)
+        host = socket.inet_aton(host)
+    else:
+        sock.connect( (host, port) )
+        
     server = ServerData(host=host, port=port, sock=sock, connectionState=ClientState.HANDSHAKE_STARTED, saveFileLocation=saveFileLocation)
+    
+    if intermediaryPort != None and intermediaryHost != None:
+        server.setIntermediaryHost(intermediaryHost)
+        server.setIntermediaryPort(intermediaryPort)
     
     print("Initiating connection to host '{}' and port {}".format(host, port))
     success = initiateConnection(server, localKeyFile)
@@ -168,7 +190,7 @@ def initiateConnection(server, ownKeyFile):
     sendMsgData = {"key":ownPubKeyHash}
     sendMsg = Message(MessageType.CONNECT_REQUEST, sendMsgData)
     sendMsgBytes = sendMsg.toBytes()
-    sock.send(sendMsgBytes)
+    sendBytes(server, sendMsgBytes)
     
     maxResendCount = 10
     resendCount = 0
@@ -186,7 +208,7 @@ def initiateConnection(server, ownKeyFile):
             if data != -1:
                 success, ownDhVal = handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash) # TODO timeout currently tries to resend next data, not prev
             if not success and server.getConnectionState() <= ClientState.DIFFIE_HELLMAN_SENT:
-                sock.send(sendMsgBytes) # Probably a timeout, resend the request
+                sendBytes(server, sendMsgBytes)
                 resendCount += 1
             else:
                 resendCount = 0
@@ -211,7 +233,6 @@ def initiateConnection(server, ownKeyFile):
             print("Max resends hit in connection, marking as shutdown")
             server.setConnectionState(ClientState.SHUTDOWN_COMPLETE)
             return False
-    print("Current State: {}".format(server.getConnectionState().name))
     
     return server.getConnectionState() == ClientState.DATA_EXCHANGE
 """
@@ -234,8 +255,8 @@ def dataRequest(server, object, objectKeyHash):
     
     sendMsgData = {"target":object, "keyHash":objectKeyHash, "requestNum":reqNum}
     sendMsg = Message(MessageType.OBJECT_REQUEST, sendMsgData)
-    sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
-    sock.send(sendMsgBytes)
+    sendMsgBytes = sendMsg.toBytes()
+    sendBytes(server, sendMsgBytes)
     
     resendCount = 0
     maxResendCount = 10
@@ -244,7 +265,7 @@ def dataRequest(server, object, objectKeyHash):
         try:
             data = sock.recv(1024)
         except socket.timeout:
-            sock.send(sendMsgBytes)
+            sendBytes(server, sendMsgBytes)
             resendCount += 1
             continue
         
@@ -282,7 +303,6 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
         msg = Message.fromBytes(unencryptedData)
         pubKeyHash = msg.getPublicKeyHash()
         serverDhVal = msg.getDiffieHellmanValue()
-        print(msg.data)
         if pubKeyHash == False or pubKeyHash == None or serverDhVal == False or serverDhVal == None: # Not a valid CONNECT_RESPONSE. Probably an encrypted message that start with the right number
             return (False, None)
     except: # Not a proper message, likely wrong level of encryption
@@ -309,7 +329,7 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
     sendMsgBytes = RSA.encrypt(sendMsg.toBytes(), server.getPubKey())
     signature = RSA.sign(sendMsg.toBytes(), ownPrivKey)
     finalSendBytes = bytearray(sendMsgBytes) + bytearray(signature)
-    sock.send(bytes(finalSendBytes))
+    sendBytes(server, bytes(finalSendBytes))
     
     return True, dhVal
     
@@ -345,7 +365,7 @@ def handleKeyAdvertisement(server, data):
     sendMsgData = {"keys":allowedKeys}
     sendMsg = Message(MessageType.KEY_ADVERTISEMENT, sendMsgData)
     sendMsgBytes = AES.encrypt(sendMsg.toBytes(), server.getSessionKey())
-    sock.send(sendMsgBytes)
+    sendBytes(server, sendMsgBytes)
     return True
 
 """
@@ -404,7 +424,7 @@ def handleObjectRequestAck(server, data):
     sendMsgData = {"requestNum":reqNum}
     sendMsg = Message(MessageType.DATA_ACK, sendMsgData)
     sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
-    sock.send(sendMsgBytes)
+    sendBytes(server, sendMsgBytes)
     
     return (True, status, reqNum)
     
@@ -453,7 +473,7 @@ def handleDataResponse(server, msg):
     sendMsgData = {"requestNum":reqNum}
     sendMsg = Message(MessageType.DATA_ACK, sendMsgData)
     sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
-    sock.send(sendMsgBytes)
+    sendBytes(server, sendMsgBytes)
     
     return True
     
@@ -471,7 +491,7 @@ def initiateShutdown(server):
     sendMsg = Message(MessageType.SHUTDOWN_REQUEST)
     sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     
-    sock.send(sendMsgBytes)
+    sendBytes(server, sendMsgBytes)
     
     while server.getConnectionState() != ClientState.SHUTDOWN_COMPLETE and resendCount < maxResendCount:
         data = None
@@ -481,7 +501,7 @@ def initiateShutdown(server):
             data = -1
         
         if data == -1:
-            sock.send(sendMsgBytes)
+            sendBytes(server, sendMsgBytes)
         else:
             unencryptedData = AES.decrypt(data=data, key=sessionKey)
             msg = Message.fromBytes(unencryptedData)
@@ -489,9 +509,9 @@ def initiateShutdown(server):
                 server.setConnectionState(ClientState.SHUTDOWN_COMPLETE)
                 sendMsg = Message(MessageType.SHUTDOWN_CLOSER_ACK)
                 sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
-                sock.send(sendMsgBytes)
+                sendBytes(server, sendMsgBytes)
             else:
-                sock.send(sendMsgBytes)
+                sendBytes(server, sendMsgBytes)
         
         resendCount += 1
     
@@ -528,6 +548,12 @@ def saveObject(data, name, saveLoc):
     f = open(saveLoc + name, "wb+")
     f.write(data)
     f.close()
+
+def sendBytes(server, sendMsgBytes):
+    if server.isUsingIntermediary():
+        sendMsgBytes.prepend(htons(server.getPort())) # TODO make this work
+        sendMsgBytes.prepend(htonl(server.getHost())) # TODO make this work
+    server.getSocket().send(sendMsgBytes)
 
 def main():
     usageStr = """
@@ -567,7 +593,6 @@ def main():
         if opt == '-f':
             saveFileLocation = optSet[1]
     targetFiles = remainingArgs
-    print("remaingingArgs: {}".format(targetFiles))
     
     optionsValid = True
     if serverKeyFile == None:

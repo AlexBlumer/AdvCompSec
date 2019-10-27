@@ -1,8 +1,10 @@
+# adsec15 Fall 2019
+
 from enum import Enum, IntEnum, unique
 import cbor
 
-# TODO maybe add automatic hashes to to/fromBytes(), for integrity purposes
-# TODO add timestamp to connect request, response, and diffie hellman response to remove replay attacks
+# TODO Add timeout to DATA_RESPONSE
+# TODO Add intermediary data to CONNECT_REQUEST
 
 @unique
 class MessageType(IntEnum):
@@ -77,6 +79,24 @@ class Message:
             return False
         
         return self.data.get("key")
+    
+    # Returns client's IP if it is there, None if it is not there, or False if it is the wrong message type
+    # This field should only exist if an intermediary is being used
+    # Only CONNECT_REQUEST should have this field
+    def getClientIp(self):
+        if self.type != MessageType.CONNECT_REQUEST:
+            return False
+        
+        return self.data.get("clientIp")
+    
+    # Returns client's IP if it is there, None if it is not there, or False if it is the wrong message type
+    # This field should only exist if an intermediary is being used
+    # Only CONNECT_REQUEST should have this field
+    def getClientPort(self):
+        if self.type != MessageType.CONNECT_REQUEST:
+            return False
+        
+        return self.data.get("clientPort")
     
     # Returns Diffie-Hellman exchange paramaters if it is there, None if it is not there, or False if it is the wrong message type
     # Only CONNECT_RESPONSE should have this value
@@ -174,3 +194,11 @@ class Message:
             return False
         
         return self.data.get("dataHash")
+        
+    # Returns expiration time if it is there, None if it is not there, or False if it is the wrong message type
+    # Only DATA_MESSAGE should have this value
+    def getExpiration(self):
+        if self.type != MessageType.DATA_MESSAGE:
+            return False
+        
+        return self.data.get("expiration")

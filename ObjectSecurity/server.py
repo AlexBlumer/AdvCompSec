@@ -1,3 +1,5 @@
+# adsec15 Fall 2019
+
 import socket
 from messageDecoder import *
 from enum import IntEnum
@@ -9,10 +11,7 @@ import base64
 from getopt import getopt
 import uuid
 from time import gmtime, time
-# TODO finish helper functions
-# TODO figure out actual max length of packets for receiving
-# TODO resends
-# TODO actually fail if no responses in completeConnectionServer
+# TODO add cmdline options for intermediary
 
 RESPONSE_TIMEOUT = 0.25 # 250 ms
 
@@ -53,6 +52,7 @@ class ClientData:
         self.requestNumbers = {}
         self.requestData = {}
         self.loadFileLocation = loadFileLocation
+        self.usingIntermediary = False
         
     def getHost(self):
         return self.host
@@ -99,6 +99,11 @@ class ClientData:
     def setRequestNumberState(self, requestNumber, state):
         self.requestNumbers[requestNumber] = state
     
+    def setUsingIntermediary(self, val):
+        self.usingIntermediary = val
+    def isUsingIntermediary(self):
+        return self.usingIntermediary
+    
     def getRequestNumberData(self, requestNumber):
         return self.requestData.get(requestNumber)
     def setRequestNumberData(self, requestNumber, data):
@@ -116,7 +121,6 @@ def runServer(clientKeyFile, objectKeyFile, localKeyFile, loadFileLocation, addr
     clientKeys = getAllowableKeys(clientKeyFile)
     clientKeyDict = {}
     for key in clientKeys:
-        print(bytes(key,'utf-8'))
         keyHash = getHash(bytes(key,'utf-8'))
         clientKeyDict[keyHash] = key
     global objectKeyDict
@@ -263,23 +267,23 @@ def dataExchangeLoop(client):
         msg = None
         type = None
         try:
-            print ("Decrypting Data exchange message")
             unencryptedData = AES.decrypt(key=sessionKey, data=data)
             msg = Message.fromBytes(unencryptedData)
             type = msg.getType()
             if type != MessageType.SHUTDOWN_REQUEST and type != MessageType.OBJECT_REQUEST and type != MessageType.DATA_ACK and type != KEY_ADVERTISEMENT:
                 continue
             
-            print("Received message of type: {}".format(type.name))
-            # TODO reset timer if successful
             lastMessageTime = time()
-        except: # Invalid message
-            continue
+        except: # Probably an OBJECT_REQUEST
+            try:
+                msg = Message.fromBytes(data)
+                if type == MessageType.OBJECT_REQUEST:
+                    handleObjectRequest(client, msg)
+            except: # An invalid message
+                continue
             
         if type == MessageType.SHUTDOWN_REQUEST:
             handleShutdown(client)
-        elif type == MessageType.OBJECT_REQUEST:
-            handleObjectRequest(client, msg)
         elif type == MessageType.DATA_ACK:
             handleDataAck(client, msg)
         elif type == MessageType.KEY_ADVERTISEMENT:
@@ -304,9 +308,13 @@ If called while in another state, it merely resends the response with the given 
 """
 def handleConnectRequest(client, data, dhParams=None, dhVal=None):
     pubKeyHash = None
+    clientIp = None
+    clientPort = None
     try:
         msg = Message.fromBytes(data)
         pubKeyHash = msg.getPublicKeyHash()
+        clientIp = msg.getClientIp()
+        clientPort = msg.getClientPort()
         if pubKeyHash == False or pubKeyHash == None: # Not a valid CONNECT_REQUEST. Probably an encrypted message that start with the right number
             return False, None, None, None
     except: # Not a proper message, likely wrong level of encryption
@@ -315,6 +323,11 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
     privDhVal = None
     if client.getConnectionState() == ServerState.HANDSHAKE_STARTED: # Need to save data from CONNECT_REQUEST
         clientPublicKey = clientKeyDict.get(pubKeyHash)
+        
+        if clientIp != None and clientPort != None:
+            client.setUsingIntermediary(True)
+            client.setHost(socket.ntohl(clientIp))
+            client.setPort(socket.ntohs(clientPort))
         
         if clientPublicKey == None: # An unknown person
             client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
@@ -327,16 +340,14 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
             
             privDhVal, dhVal = DH.createDiffieHellmanValue()
     
-    # print("Key hash: {}".format(ownPubKeyHash))
     sendMsgData = {"key": ownPubKeyHash, "exchangeValue": dhVal}
     sendMsg = Message(MessageType.CONNECT_RESPONSE, sendMsgData)
     clientPubKey = client.getPubKey()
     sendMsg = Message(MessageType.CONNECT_RESPONSE, sendMsgData)
-    print(clientPubKey)
     sendBytes = RSA.encrypt(sendMsg.toBytes(), clientPubKey)
     
     sock = client.getSocket()
-    sock.send(sendBytes)
+    sendBytes(client, sendBytes)
     
     return True, dhParams, dhVal, privDhVal
 
@@ -356,7 +367,6 @@ def handleDiffieHellmanResponse(client, data, privDhVal=None):
         encryptedData, signature = RSA.separateSignature(data, clientPubKey)
         unencryptedData = RSA.decrypt(data=encryptedData, key=ownPrivKey)
         if not RSA.checkSignature(unencryptedData, clientPubKey, signature):
-            print("DiffieHellman response not from actual client")
             return False
         msg = Message.fromBytes(unencryptedData)
         dhVal = msg.getDiffieHellmanValue()
@@ -382,7 +392,7 @@ def handleDiffieHellmanResponse(client, data, privDhVal=None):
     sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     
     sock = client.getSocket()
-    sock.send(sendMsgBytes)
+    sendBytes(client, sendMsgBytes)
     
 """
 Handles key advertisement messages received by the server and sends the key advertisement ack. If called in KEYS_ADVERTISED, updates the client's state and saves the allowed keys.
@@ -417,7 +427,7 @@ def handleKeyAdvertisementServer(client, data, privDhVal=None):
     sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     
     sock = client.getSocket()
-    sock.send(sendMsgBytes)
+    sendBytes(client, sendMsgBytes)
     
     return True
     
@@ -439,7 +449,7 @@ def handleShutdown(client):
     sendMsg = Message(MessageType.SHUTDOWN_CLOSEE_ACK)
     sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
     
-    sock.send(sendMsgBytes)
+    sendBytes(client, sendMsgBytes)
     
     while client.getConnectionState() != ServerState.SHUTDOWN_COMPLETE and resendCount < maxResendCount:
         try:
@@ -449,14 +459,14 @@ def handleShutdown(client):
             continue
         
         if data == -1:
-            sock.send(sendMsgBytes)
+            sendBytes(client, sendMsgBytes)
         else:
             unencryptedData = AES.decrypt(data=data, key=sessionKey)
             msg = Message.fromBytes(unencryptedData)
             if msg.type == MessageType.SHUTDOWN_CLOSER_ACK:
                 client.setConnectionState(ServerState.SHUTDOWN_COMPLETE)
             else:
-                sock.send(sendMsgBytes)
+                sendBytes(client, sendMsgBytes)
         
         resendCount += 1
     
@@ -480,7 +490,6 @@ def handleObjectRequest(client, msg): # TODO add an objReqAck
         return
     
     if not isValidRequestNumber(reqNum) or not keyHash in objectKeyDict.keys(): # TODO create func and decide what makes a request number
-        print("reqNum: {} isvalid {}".format(reqNum, isValidRequestNumber(reqNum)))
         return
     elif not client.checkRequestNumberUsed(reqNum): # A new request
         client.setRequestNumberState(reqNum, DataExchangeState.DATA_SENT)
@@ -493,37 +502,38 @@ def handleObjectRequest(client, msg): # TODO add an objReqAck
             sendMsgData = {"status":DataExchangeStatus.OBJ_NOT_FOUND, "requestNum":reqNum}
             sendMsg = Message(MessageType.OBJECT_REQUEST_ACK, sendMsgData)
             sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
-            sock.send(sendMsgBytes)
+            sendBytes(client, sendMsgBytes)
+            print("Requested file not found: '{}'".format(target))
             return
         elif objectKey == None:
             sessionKey = client.getSessionKey()
             sendMsgData = {"status":DataExchangeStatus.UNKNOWN_KEY, "requestNum":reqNum}
             sendMsg = Message(MessageType.OBJECT_REQUEST_ACK, sendMsgData)
             sendMsgBytes = AES.encrypt(data=sendMsg.toBytes(), key=sessionKey)
-            sock.send(sendMsgBytes)
+            sendBytes(client, sendMsgBytes)
+            print("Object key unknown for requested file: '{}'".format(target))
             return
         
-        print("object key: {}".format(objectKey))
         objectKey = base64.b64decode(objectKey)
         encryptedObjectData = AES.encrypt(data=objectData, key=objectKey)
         preHashValue = bytearray(objectData) + bytearray(target, "ascii")
         objectHash = getHash(preHashValue) # TODO make it actually append
         encryptedObjectHash = AES.encrypt(data=bytes(objectHash), key=objectKey)
         
-        messageData = {"keyHash":keyHash, "dataHash":encryptedObjectHash, "data":encryptedObjectData, "objectName":target, "requestNum":reqNum}
+        messageData = {"keyHash":keyHash, "dataHash":encryptedObjectHash, "data":encryptedObjectData, "objectName":target, "requestNum":reqNum, "expiration": time() + 3600}
         client.setRequestNumberData(reqNum, messageData) # Save the data to avoid recomputing for resends
         
         sendMsg = Message(MessageType.DATA_MESSAGE, messageData)
         sendMsgBytes = sendMsg.toBytes()
         
-        sock.send(sendMsgBytes)
+        sendBytes(client, sendMsgBytes)
+        print("File found and sent: '{}'".format(target))
     elif client.getRequestNumberState(reqNum) == DataExchangeState.DATA_SENT: # A resend request
-        print("Resend request. Number {}".format(reqNum))
         messageData = client.getRequestNumberData(reqNum)
         sendMsg = Message(MessageType.DATA_MESSAGE, messageData)
         sendMsgBytes = sendMsg.toBytes()
         
-        sock.send(sendMsgBytes)
+        sendBytes(client, sendMsgBytes)
     # Only remaining possibility is a valid request with a request number that has been ACKed, in which case no need to send more data
         
         
@@ -571,6 +581,12 @@ def retrieveData(target, loadFileLocation):
             return data
     except:
         return None
+
+def sendBytes(client, sendMsgBytes):
+    if client.isUsingIntermediary():
+        sendMsgBytes.prepend(htons(client.getPort())) # TODO make this work
+        sendMsgBytes.prepend(htonl(client.getHost())) # TODO make this work
+    client.getSocket().send(sendMsgBytes)
 
 def main():
     usageStr = """
