@@ -1,2 +1,11 @@
 **/__pycache__
 DataForensics/Files
+*.vdi
+TPM/**/Logs
+TPM/**/Snapshots
+*.zip
+**/clientFiles
+**/serverFiles
+**/cachedFiles
+*.pem
+*key.txt
