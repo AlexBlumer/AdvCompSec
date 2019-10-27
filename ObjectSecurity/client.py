@@ -130,7 +130,7 @@ def runClient(serverKeyFile, objectKeyFile, localKeyFile, requestedObjects, save
     localPort = random.randint(1024, 65535)
     sock.bind( ('', localPort) ) # bind to any open addresss
     
-    if intermediaryPort == None or intermediaryHost == None:
+    if intermediaryPort != None and intermediaryHost != None:
         sock.connect( (intermediaryHost, intermediaryPort) )
         host = socket.gethostbyname(host)
         host = socket.inet_aton(host)
@@ -257,6 +257,7 @@ def dataRequest(server, object, objectKeyHash):
     sendMsg = Message(MessageType.OBJECT_REQUEST, sendMsgData)
     sendMsgBytes = sendMsg.toBytes()
     sendBytes(server, sendMsgBytes)
+    print("objreq sent") # DEBUG
     
     resendCount = 0
     maxResendCount = 10
@@ -295,6 +296,8 @@ If called while in another state, it merely resends the response with the given 
 def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
     sock = server.getSocket()
     
+    print("connect resp received") # DEBUG
+    
     pubKeyHash = None
     serverDhVal = None
     dhParams = None
@@ -330,6 +333,8 @@ def handleConnectResponse(server, data, ownPrivKey, ownPubKeyHash, dhVal=None):
     signature = RSA.sign(sendMsg.toBytes(), ownPrivKey)
     finalSendBytes = bytearray(sendMsgBytes) + bytearray(signature)
     sendBytes(server, bytes(finalSendBytes))
+    
+    print("key ad sent") # DEBUG
     
     return True, dhVal
     
@@ -385,6 +390,7 @@ def handleKeyAdvertisementAck(server, data):
     except:
         return False
     
+    print("key ad recv") # DEBUG
     if server.getConnectionState() == ClientState.KEYS_ADVERTISED:
         server.setConnectionState(ClientState.DATA_EXCHANGE)
 

@@ -169,7 +169,7 @@ def runServer(clientKeyFile, objectKeyFile, localKeyFile, loadFileLocation, addr
         client = ClientData(host=host, port=port, sock=connSock, connectionState=ServerState.HANDSHAKE_STARTED, loadFileLocation=loadFileLocation)
         
         print("Connection initiated by IP '{}' and port {}".format(host, port))
-        connectionSuccess = completeConnectionServer(client)
+        completeConnectionServer(client)
         
         if client.getConnectionState() == ServerState.DATA_EXCHANGE:
             print("Connection from IP '{}' and port {} successful".format(host, port))
@@ -277,6 +277,7 @@ def dataExchangeLoop(client):
         except: # Probably an OBJECT_REQUEST
             try:
                 msg = Message.fromBytes(data)
+                type = msg.getType()
                 if type == MessageType.OBJECT_REQUEST:
                     handleObjectRequest(client, msg)
             except: # An invalid message
@@ -344,11 +345,12 @@ def handleConnectRequest(client, data, dhParams=None, dhVal=None):
     sendMsg = Message(MessageType.CONNECT_RESPONSE, sendMsgData)
     clientPubKey = client.getPubKey()
     sendMsg = Message(MessageType.CONNECT_RESPONSE, sendMsgData)
-    sendBytes = RSA.encrypt(sendMsg.toBytes(), clientPubKey)
+    sendMsgBytes = RSA.encrypt(sendMsg.toBytes(), clientPubKey)
     
     sock = client.getSocket()
-    sendBytes(client, sendBytes)
+    sendBytes(client, sendMsgBytes)
     
+    print("Connect response sent") # DEBUG
     return True, dhParams, dhVal, privDhVal
 
 """
@@ -403,6 +405,7 @@ Handles key advertisement messages received by the server and sends the key adve
 :returns:   success - a boolean indicating whether or not the received message was a valid KEY_ADVERTISEMENT
 """
 def handleKeyAdvertisementServer(client, data, privDhVal=None):
+    print("key ad received") # DEBUG
     validKeyHashes = None
     try:
         sessionKey = client.getSessionKey()
@@ -428,6 +431,8 @@ def handleKeyAdvertisementServer(client, data, privDhVal=None):
     
     sock = client.getSocket()
     sendBytes(client, sendMsgBytes)
+    
+    print("key ad sent") # DEBUG
     
     return True
     
@@ -479,6 +484,7 @@ Handles object requests received by the server and sends the data message. If th
 :param msg:         A Message object with type of OBJECT_REQUEST
 """
 def handleObjectRequest(client, msg): # TODO add an objReqAck
+    print("objreq recv") # DEBUG
     reqNum = msg.getRequestNumber()
     target = msg.getTargetObject()
     keyHash = msg.getRequestedObjectKeyHash()
