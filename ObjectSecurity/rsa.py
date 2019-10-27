@@ -1,3 +1,5 @@
+# adsec15 Fall 2019
+
 import Crypto
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
@@ -20,7 +22,6 @@ class ObjSRSA:
     def encrypt(data, key):
         cipher = PKCS1_OAEP.new(key)
         encrypted = cipher.encrypt(data)
-        print('encrypted message:' + str(encrypted)) #ciphertext
         return encrypted
     def sign(data, key):
         signer = PKCS1_PSS.new(key)
@@ -32,7 +33,6 @@ class ObjSRSA:
         cipher = PKCS1_OAEP.new(key)
         decrypted = cipher.decrypt(data)
         # decrypted = key.decrypt(ast.literal_eval(str(data)))
-        print('decrypted' + str(decrypted))
         return decrypted
     def separateSignature(message, key):
         border = key.size_in_bytes()
